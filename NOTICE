@@ -49,3 +49,10 @@ frontend/apps/artcraft/app/public/resources/skybox/gray/ and skybox/night/ — s
 frontend/apps/artcraft/app/public/resources/pose/Lumine Idle cycle.vmd — third-party MMD motion
   data.
 frontend/apps/artcraft/app/public/resources/characters_gif/ — renders of Mixamo animations.
+
+NRS fork note (Justy6674/artcraft, branch nrs)
+
+The files listed above under "Material not covered by the license above" (Nintendo sound effects, meme
+images and likenesses, the gray and night skybox packs, the Lumine MMD motion, and the Mixamo render GIFs)
+have been removed from this fork. Code that referenced them now falls back to silence, an empty list, the
+default skybox, a placeholder thumbnail, or loading MMD models without the idle motion.

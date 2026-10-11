@@ -1147,17 +1147,15 @@ class Scene {
 
     return new Promise((resolve, reject) => {
       const mmdLoader = new MMDLoader();
-      mmdLoader.loadWithAnimation(
+      // NRS build: the bundled idle motion (third-party MMD data, no licence)
+      // was removed, so MMD models load without the default idle animation.
+      mmdLoader.load(
         media_url,
-        ["/resources/pose/Lumine Idle cycle.vmd"],
-        (mmd) => {
-          this.helper.add(mmd.mesh, {
-            animation: mmd.animation,
-            physics: false,
-          });
+        (mesh) => {
+          this.helper.add(mesh, { physics: false });
 
-          mmd.mesh.scale.set(0.1, 0.1, 0.1);
-          resolve(mmd.mesh);
+          mesh.scale.set(0.1, 0.1, 0.1);
+          resolve(mesh);
         },
         progress,
         (error) => {
@@ -1203,19 +1201,6 @@ class Scene {
       if (this.ambientLight) this.scene.remove(this.ambientLight);
       if (this.directional_light) this.scene.add(this.directional_light);
       if (this.hemisphereLight) this.scene.add(this.hemisphereLight);
-    } else if (this.skybox == "m_0") {
-      const texture = loader.load([
-        "/resources/skybox/night/Night_Moon_Burst_Cam_2_LeftX.webp",
-        "/resources/skybox/night/Night_Moon_Burst_Cam_3_Right-X.webp",
-        "/resources/skybox/night/Night_Moon_Burst_Cam_4_UpY.webp",
-        "/resources/skybox/night/Night_Moon_Burst_Cam_5_Down-Y.webp",
-        "/resources/skybox/night/Night_Moon_Burst_Cam_0_FrontZ.webp",
-        "/resources/skybox/night/Night_Moon_Burst_Cam_1_Back-Z.webp",
-      ]);
-      this.scene.background = texture;
-      if (this.ambientLight) this.scene.remove(this.ambientLight);
-      if (this.directional_light) this.scene.add(this.directional_light);
-      if (this.hemisphereLight) this.scene.add(this.hemisphereLight);
     } else if (this.skybox == "m_1") {
       // Empty skybox - just a plain color
       this.scene.background = new THREE.Color("#282828");
@@ -1227,19 +1212,6 @@ class Scene {
       if (this.ambientLight) this.scene.add(this.ambientLight);
       if (this.directional_light) this.scene.remove(this.directional_light);
       if (this.hemisphereLight) this.scene.remove(this.hemisphereLight);
-    } else if (this.skybox == "m_3") {
-      const texture = loader.load([
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_2_LeftX.webp",
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_3_Right-X.webp",
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_4_UpY.webp",
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_5_Down-Y.webp",
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_0_FrontZ.webp",
-        "/resources/skybox/gray/Sky_AllSky_Overcast4_Low_Cam_1_Back-Z.webp",
-      ]);
-      this.scene.background = texture;
-      if (this.ambientLight) this.scene.remove(this.ambientLight);
-      if (this.directional_light) this.scene.add(this.directional_light);
-      if (this.hemisphereLight) this.scene.add(this.hemisphereLight);
     } else {
       // Default to empty skybox if no match
       this.scene.background = new THREE.Color("#282828");

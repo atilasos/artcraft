@@ -11,46 +11,10 @@ type SoundDef = {
   label?: string;
 };
 
-const SOUNDS: readonly SoundDef[] = [
-  // Menu choices
-  { key: "click", path: "resources/sound/smrpg_click.wav", volume: 0.2, label: "Click" },
-  { key: "scifi_menu_beep_1", path: "resources/sound/metroidprime_UI_15.wav", volume: 0.3, label: "Sci-Fi Menu Beep 1" },
-  { key: "scifi_menu_beep_2", path: "resources/sound/metroidprime_UI_14.wav", volume: 0.3, label: "Sci-Fi Menu Beep 2" },
-  { key: "scifi_menu_select", path: "resources/sound/metroidprime_UI_18.wav", volume: 0.3, label: "Sci-Fi Menu Select" },
-  // Immediate enqueue success
-  { key: "done", path: "resources/sound/oot_dialogue_done.wav", volume: 0.4, label: "Dialog Done" },
-  // Immediate failure
-  { key: "error_chirp", path: "resources/sound/goldensun_135.wav", volume: 0.4, label: "Error Chirp" },
-  { key: "spike_throw", path: "resources/sound/smrpg_enemy_spikethrow.wav", volume: 0.1, label: "Spike Throw" },
-  { key: "giant_shell_kick", path: "resources/sound/smrpg_mario_giantshellkick.wav", volume: 0.2, label: "Shell Kick" },
-  { key: "wrong", path: "resources/sound/smrpg_wrong.wav", volume: 0.4, label: "Wrong" },
-  // Async success
-  { key: "special_flower", path: "resources/sound/smrpg_specialflower.wav", volume: 0.2, label: "Special Flower" },
-  { key: "extra_power", path: "resources/sound/smrpg_character_extrapower.wav", volume: 0.2 },
-  // Async errors
-  { key: "crumble", path: "resources/sound/smrpg_drybones_crumble.wav", volume: 0.1, label: "Crumble" },
-  { key: "ghost", path: "resources/sound/smrpg_ghost.wav", volume: 0.2, label: "Ghost" },
-  { key: "special_alert", path: "resources/sound/goldensun_214.wav", volume: 0.2, label: "Special Alert" },
-  { key: "scifi_alert", path: "resources/sound/metroidprime_UI_52.wav", volume: 0.2, label: "Sci-Fi Alert" },
-  { key: "scifi_shrill_alert", path: "resources/sound/metroidprime_UI_51.wav", volume: 0.2, label: "Sci-Fi Shrill Alert" },
-  // Menus
-  { key: "next", path: "resources/sound/oot_dialogue_next.wav", volume: 0.2, label: "Dialog Next" },
-  { key: "select", path: "resources/sound/goldensun_111.wav", volume: 0.4, label: "Select" },
-  { key: "scifi_menu_open", path: "resources/sound/metroidprime_UI_12.wav", volume: 0.3, label: "Sci-Fi Menu Open" },
-  { key: "scifi_menu_close", path: "resources/sound/metroidprime_UI_13.wav", volume: 0.3, label: "Sci-Fi Menu Close" },
-  // Reward / celebration
-  { key: "correct", path: "resources/sound/smrpg_correct.wav", volume: 0.1, label: "Correct" },
-  { key: "flower", path: "resources/sound/smrpg_flower.wav", volume: 0.1, label: "Flower" },
-  // Trash / delete
-  { key: "trash", path: "resources/sound/oot_scrub_crumble.wav", volume: 0.4, label: "Trash" },
-  // Misc — registered but not user-selectable
-  { key: "accept_chirp", path: "resources/sound/goldensun_101.wav", volume: 0.2 },
-  { key: "accept_normal_level_1", path: "resources/sound/goldensun_173.wav", volume: 0.2 },
-  { key: "accept_normal_level_2", path: "resources/sound/goldensun_174.wav", volume: 0.2 },
-  { key: "accept_normal_level_3", path: "resources/sound/goldensun_175.wav", volume: 0.2 },
-  { key: "decline_chirp", path: "resources/sound/goldensun_102.wav", volume: 0.2 },
-  { key: "decline_normal", path: "resources/sound/goldensun_113.wav", volume: 0.2 },
-];
+// NRS build: the bundled sound effects were from Nintendo games with no licence
+// (see NOTICE), so the files and this catalogue were removed. Every sound
+// setting falls back to silence; add licence-clean files here to restore it.
+const SOUNDS: readonly SoundDef[] = [];
 
 export type SoundOption = { value: string; label: string };
 
