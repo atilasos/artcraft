@@ -2,6 +2,7 @@ use futures::TryFutureExt;
 use log::{error, info};
 use reqwest::Client;
 use tauri::ipc::Response;
+use crate::core::utils::nrs_url_allowlist::is_allowed_url;
 
 /// Request a URL and load it without worrying about CORS.
 #[tauri::command]
@@ -9,7 +10,10 @@ pub async fn load_without_cors_command(url: String) -> Result<Response, String> 
 
   info!("load_without_cors_command for URL: {}", url);
 
-  // TODO(bt,2025-07-22): Make sure the URL is valid and safe to fetch. Check an allowlist.
+  if !is_allowed_url(&url) {
+    error!("load_without_cors_command refused a URL outside the allowlist: {}", url);
+    return Err(format!("This address isn't on the list of allowed sources: {}", url));
+  }
 
   // TODO(bt,2025-07-22): Should we cache clients so we don't need to SSL handshake every time?
   let client = Client::builder()

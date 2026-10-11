@@ -22,7 +22,160 @@
       "identifier": "http:default",
       "allow": [
         {
-          "url": "https://*"
+          "url": "https://storyteller.ai"
+        },
+        {
+          "url": "https://*.storyteller.ai"
+        },
+        {
+          "url": "https://fakeyou.com"
+        },
+        {
+          "url": "https://*.fakeyou.com"
+        },
+        {
+          "url": "https://getartcraft.com"
+        },
+        {
+          "url": "https://*.getartcraft.com"
+        },
+        {
+          "url": "https://artcraft.ai"
+        },
+        {
+          "url": "https://*.artcraft.ai"
+        },
+        {
+          "url": "https://r2.dev"
+        },
+        {
+          "url": "https://*.r2.dev"
+        },
+        {
+          "url": "https://googleapis.com"
+        },
+        {
+          "url": "https://*.googleapis.com"
+        },
+        {
+          "url": "https://googleusercontent.com"
+        },
+        {
+          "url": "https://*.googleusercontent.com"
+        },
+        {
+          "url": "https://gravatar.com"
+        },
+        {
+          "url": "https://*.gravatar.com"
+        },
+        {
+          "url": "https://fal.ai"
+        },
+        {
+          "url": "https://*.fal.ai"
+        },
+        {
+          "url": "https://fal.media"
+        },
+        {
+          "url": "https://*.fal.media"
+        },
+        {
+          "url": "https://fal.run"
+        },
+        {
+          "url": "https://*.fal.run"
+        },
+        {
+          "url": "https://x.ai"
+        },
+        {
+          "url": "https://*.x.ai"
+        },
+        {
+          "url": "https://grok.com"
+        },
+        {
+          "url": "https://*.grok.com"
+        },
+        {
+          "url": "https://twimg.com"
+        },
+        {
+          "url": "https://*.twimg.com"
+        },
+        {
+          "url": "https://worldlabs.ai"
+        },
+        {
+          "url": "https://*.worldlabs.ai"
+        },
+        {
+          "url": "https://wlt-ai.art"
+        },
+        {
+          "url": "https://*.wlt-ai.art"
+        },
+        {
+          "url": "https://chatgpt.com"
+        },
+        {
+          "url": "https://*.chatgpt.com"
+        },
+        {
+          "url": "https://openai.com"
+        },
+        {
+          "url": "https://*.openai.com"
+        },
+        {
+          "url": "https://oaistatic.com"
+        },
+        {
+          "url": "https://*.oaistatic.com"
+        },
+        {
+          "url": "https://oaiusercontent.com"
+        },
+        {
+          "url": "https://*.oaiusercontent.com"
+        },
+        {
+          "url": "https://sora.com"
+        },
+        {
+          "url": "https://*.sora.com"
+        },
+        {
+          "url": "https://midjourney.com"
+        },
+        {
+          "url": "https://*.midjourney.com"
+        },
+        {
+          "url": "https://kinovi.ai"
+        },
+        {
+          "url": "https://*.kinovi.ai"
+        },
+        {
+          "url": "https://seedance2-pro.com"
+        },
+        {
+          "url": "https://*.seedance2-pro.com"
+        },
+        {
+          "url": "https://gmicloud.ai"
+        },
+        {
+          "url": "https://*.gmicloud.ai"
+        },
+        {
+          "url": "https://notrealsmart.com.au"
+        },
+        {
+          "url": "https://*.notrealsmart.com.au"
         },
         {
           "url": "http://localhost:12345"

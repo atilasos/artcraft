@@ -12,7 +12,7 @@
     "security": {
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/**", "$APPLOCALDATA/**", "$APPCACHE/**", "$HOME/Artcraft/**", "$DOWNLOAD/**", "$DESKTOP/**", "$DOCUMENT/**", "$PICTURE/**", "$VIDEO/**", "$AUDIO/**", "$TEMP/**"]
       },
       "csp": {
         "default-src": [
@@ -27,6 +27,7 @@
           "tauri://localhost"
         ],
         "connect-src": [
+          "https://www.notrealsmart.com.au",
           "'self'",
           "'unsafe-eval'",
           "'unsafe-inline'",
