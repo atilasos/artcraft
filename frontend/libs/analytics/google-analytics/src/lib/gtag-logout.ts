@@ -1,10 +1,4 @@
-import { TAG_ID } from './tag-id.js';
-
+// NRS build: Google Analytics removed. Kept as a no-op so callers compile unchanged.
 export const gtagLogout = function() {
-  console.debug("gtagLogout", TAG_ID);
-
-  (window as any).gtag(
-    'config', TAG_ID, {
-    'user_id': null
-  });
+  return;
 }
