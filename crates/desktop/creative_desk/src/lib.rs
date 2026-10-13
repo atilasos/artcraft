@@ -34,7 +34,7 @@ pub fn run() -> anyhow::Result<()> {
     .build(tauri::generate_context!())?
     .run(|app, event| {
       if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
-        app.state::<AppState>().codex.cancel();
+        app.state::<AppState>().codex.shutdown();
       }
     });
   Ok(())

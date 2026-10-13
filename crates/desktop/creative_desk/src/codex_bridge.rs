@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 #[cfg(unix)]
@@ -25,7 +25,19 @@ const LOCAL_INSTRUCTIONS: &str = "You are the Creative Desk local creative assis
 #[derive(Default)]
 pub struct CodexBridge {
   execution: Mutex<()>,
-  maybe_child_pid: Arc<Mutex<Option<u32>>>,
+  lifecycle: Arc<ChildLifecycle>,
+}
+
+#[derive(Default)]
+struct ChildLifecycle {
+  state: Mutex<ChildState>,
+  finished: Condvar,
+}
+
+#[derive(Default)]
+struct ChildState {
+  closing: bool,
+  maybe_pid: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -68,36 +80,29 @@ struct Transport {
   deadline: Instant,
   next_id: u64,
   pending: Vec<Value>,
-  activity: Arc<Mutex<Option<u32>>>,
+  activity: Arc<ChildLifecycle>,
   stop_deadline: mpsc::Sender<()>,
   maybe_watchdog: Option<JoinHandle<()>>,
 }
 
 impl CodexBridge {
-  pub fn cancel(&self) {
-    let maybe_pid = {
-      let guard = self.maybe_child_pid.lock().unwrap_or_else(|poison| poison.into_inner());
-      if let Some(pid) = *guard {
-        kill_process_group(pid);
-      }
-      *guard
-    };
-    if maybe_pid.is_some() {
-      let deadline = Instant::now() + Duration::from_secs(2);
-      while Instant::now() < deadline {
-        if self.maybe_child_pid.lock().unwrap_or_else(|poison| poison.into_inner()).is_none() {
-          break;
-        }
-        thread::sleep(Duration::from_millis(10));
-      }
+  pub fn shutdown(&self) {
+    let mut state = self.lifecycle.state.lock().unwrap_or_else(|poison| poison.into_inner());
+    state.closing = true;
+    if let Some(pid) = state.maybe_pid {
+      kill_process_group(pid);
+    }
+    while state.maybe_pid.is_some() {
+      state = self.lifecycle.finished.wait(state).unwrap_or_else(|poison| poison.into_inner());
     }
   }
 
   pub fn status(&self) -> CodexStatus {
     let result = (|| -> Result<String> {
       let _guard = self.execution.try_lock().map_err(|_| anyhow::anyhow!("Codex is busy"))?;
+      self.ensure_open()?;
       let mut transport =
-        Transport::spawn(codex_command()?, STATUS_TIMEOUT, Some(self.maybe_child_pid.clone()))?;
+        Transport::spawn(codex_command()?, STATUS_TIMEOUT, Some(self.lifecycle.clone()))?;
       transport.initialize()?;
       transport.account_mode()
     })();
@@ -121,8 +126,9 @@ impl CodexBridge {
 
   pub fn models(&self) -> Result<Vec<CodexModel>> {
     let _guard = self.execution.try_lock().map_err(|_| anyhow::anyhow!("Codex is busy"))?;
+    self.ensure_open()?;
     let mut transport =
-      Transport::spawn(codex_command()?, STATUS_TIMEOUT, Some(self.maybe_child_pid.clone()))?;
+      Transport::spawn(codex_command()?, STATUS_TIMEOUT, Some(self.lifecycle.clone()))?;
     transport.initialize()?;
     ensure!(
       transport.account_mode()? == "chatgpt",
@@ -144,6 +150,7 @@ impl CodexBridge {
       .execution
       .try_lock()
       .map_err(|_| anyhow::anyhow!("Codex is already processing a request"))?;
+    self.ensure_open()?;
     ensure!(!prompt.trim().is_empty() && prompt.len() <= 100_000, "Prompt is empty or too large");
     let cwd = store.project_codex_dir(project_id)?;
     let mut input = vec![
@@ -175,32 +182,52 @@ impl CodexBridge {
       kind,
       input,
       TURN_TIMEOUT,
-      Some(self.maybe_child_pid.clone()),
+      Some(self.lifecycle.clone()),
       maybe_model,
     )
+  }
+
+  fn ensure_open(&self) -> Result<()> {
+    ensure!(!self.lifecycle.state.lock().unwrap_or_else(|poison| poison.into_inner()).closing,
+      "Codex bridge is closing");
+    Ok(())
   }
 }
 
 impl Transport {
   fn spawn(
+    command: Command,
+    timeout: Duration,
+    maybe_activity: Option<Arc<ChildLifecycle>>,
+  ) -> Result<Self> {
+    Self::spawn_with_registration_hook(command, timeout, maybe_activity, |_| {})
+  }
+
+  fn spawn_with_registration_hook(
     mut command: Command,
     timeout: Duration,
-    maybe_activity: Option<Arc<Mutex<Option<u32>>>>,
+    maybe_activity: Option<Arc<ChildLifecycle>>,
+    before_publish: impl FnOnce(u32),
   ) -> Result<Self> {
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn().context("Cannot start the installed Codex CLI")?;
     let activity = maybe_activity.unwrap_or_default();
-    *activity.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(child.id());
+    // Shutdown and process creation share this gate, including the unpublished OS-child interval.
+    let mut state = activity.state.lock().unwrap_or_else(|poison| poison.into_inner());
+    ensure!(!state.closing, "Codex bridge is closing");
+    let mut child = command.spawn().context("Cannot start the installed Codex CLI")?;
+    before_publish(child.id());
+    state.maybe_pid = Some(child.id());
+    drop(state);
     let deadline = Instant::now() + timeout;
     let (stop_deadline, stopped) = mpsc::channel();
     let watchdog_activity = activity.clone();
     let watchdog = thread::spawn(move || {
       if matches!(stopped.recv_timeout(timeout), Err(mpsc::RecvTimeoutError::Timeout)) {
         // The owner cannot reap while this lock is held, so the PID cannot be reused.
-        let guard = watchdog_activity.lock().unwrap_or_else(|poison| poison.into_inner());
-        if let Some(pid) = *guard {
+        let guard = watchdog_activity.state.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(pid) = guard.maybe_pid {
           kill_process_group(pid);
         }
       }
@@ -402,8 +429,8 @@ impl Drop for Transport {
     if let Some(watchdog) = self.maybe_watchdog.take() {
       let _ = watchdog.join();
     }
-    // Keep the advertised PID locked through reaping so cancellation cannot target a reused PID.
-    let mut activity = self.activity.lock().unwrap_or_else(|poison| poison.into_inner());
+    // Keep the advertised PID locked through reaping so shutdown cannot target a reused PID.
+    let mut activity = self.activity.state.lock().unwrap_or_else(|poison| poison.into_inner());
     // The child gets its own process group so tool subprocesses cannot outlive it.
     kill_process_group(self.child.id());
     let _ = self.child.kill();
@@ -411,7 +438,8 @@ impl Drop for Transport {
     if let Some(reader) = self.maybe_reader.take() {
       let _ = reader.join();
     }
-    *activity = None;
+    activity.maybe_pid = None;
+    self.activity.finished.notify_all();
   }
 }
 
@@ -422,7 +450,7 @@ fn run_request(
   kind: RequestKind,
   input: Vec<Value>,
   timeout: Duration,
-  maybe_activity: Option<Arc<Mutex<Option<u32>>>>,
+  maybe_activity: Option<Arc<ChildLifecycle>>,
   maybe_model: Option<&str>,
 ) -> Result<CodexReply> {
   command.current_dir(cwd);
@@ -583,11 +611,20 @@ fn import_generated_image(
     "Generated image file is too large"
   );
   let bytes = fs::read(&canonical)?;
+  // Check container completeness without claiming to decode pixels or verify compression/CRCs.
   let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+    ensure!(bytes.len() >= 45 && &bytes[8..16] == b"\x00\x00\x00\x0dIHDR"
+      && bytes.ends_with(b"\x00\x00\x00\x00IEND\xae\x42\x60\x82"),
+      "Generated PNG file is truncated or invalid");
     "image/png"
   } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+    ensure!(bytes.len() >= 4 && bytes.ends_with(&[0xff, 0xd9]),
+      "Generated JPEG file is truncated or invalid");
     "image/jpeg"
   } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+    let declared_len = u32::from_le_bytes(bytes[4..8].try_into()?) as u64 + 8;
+    ensure!(bytes.len() >= 20 && declared_len == bytes.len() as u64,
+      "Generated WebP file is truncated or invalid");
     "image/webp"
   } else {
     bail!("Generated file is not a supported PNG, JPEG or WebP image");
@@ -664,6 +701,8 @@ mod tests {
   use crate::project_store::{Project, ProjectKind};
   use std::fs;
 
+  const VALID_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
   #[test]
   fn external_protocol_completed_and_real_image() -> Result<()> {
     for kind in [RequestKind::Assistant, RequestKind::Image] {
@@ -673,7 +712,7 @@ mod tests {
         store.save_project(Project::new("Test", ProjectKind::Canvas, serde_json::json!({})))?;
       let cwd = store.project_codex_dir(&project.id)?;
       let image = cwd.join("result.png");
-      fs::write(&image, b"\x89PNG\r\n\x1a\nfixture")?;
+      fs::write(&image, VALID_PNG)?;
       let reply = send_with_command(fixture("completed", &image), &store, &project.id, kind)?;
       assert_eq!(reply.message, "Fixture reply");
       assert_eq!(reply.thread_id, "thread-fixture");
@@ -735,7 +774,7 @@ mod tests {
     let reply =
       send_with_command(fixture("approval", &path), &store, &project.id, RequestKind::Assistant)?;
     assert_eq!(reply.message, "Fixture reply");
-    fs::write(&path, b"\x89PNG\r\n\x1a\nfixture")?;
+    fs::write(&path, VALID_PNG)?;
     let error =
       match send_with_command(fixture("completed", &path), &store, &project.id, RequestKind::Image)
       {
@@ -743,6 +782,23 @@ mod tests {
         Err(error) => error,
       };
     assert!(error.to_string().contains("project workspace"));
+    assert!(store.list_assets()?.is_empty());
+    Ok(())
+  }
+
+  #[test]
+  fn rejects_obviously_truncated_generated_images() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().into())?;
+    let project = store.save_project(Project::new("Truncated", ProjectKind::Canvas, json!({})))?;
+    let cwd = store.project_codex_dir(&project.id)?;
+    for (index, bytes) in [b"\x89PNG\r\n\x1a\nfixture".as_slice(),
+      &VALID_PNG[..VALID_PNG.len() - 5], b"\xff\xd8\xff", b"RIFF\x04\x00\x00\x00WEBP"].into_iter().enumerate() {
+      let path = cwd.join(format!("truncated-{index}.png"));
+      fs::write(&path, bytes)?;
+      assert!(import_generated_image(&store, &path, &cwd, None).is_err(),
+        "Truncated image {index} was imported");
+    }
     assert!(store.list_assets()?.is_empty());
     Ok(())
   }
@@ -756,14 +812,14 @@ mod tests {
     let cache = root.path().join("generated_images").join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&cache)?;
     let path = cache.join(format!("exec-{}.png", uuid::Uuid::new_v4()));
-    fs::write(&path, b"\x89PNG\r\n\x1a\nfixture")?;
+    fs::write(&path, VALID_PNG)?;
     assert_eq!(import_generated_image(&store, &path, &cwd, Some(&cache))?.mime_type, "image/png");
     let other_thread = cache.parent().unwrap().join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&other_thread)?;
     let foreign = other_thread.join(path.file_name().unwrap());
     fs::copy(&path, &foreign)?;
     assert!(import_generated_image(&store, &foreign, &cwd, Some(&cache)).is_err());
-    fs::write(cache.join("unrelated.png"), b"\x89PNG\r\n\x1a\nfixture")?;
+    fs::write(cache.join("unrelated.png"), VALID_PNG)?;
     assert!(import_generated_image(&store, &cache.join("unrelated.png"), &cwd, Some(&cache)).is_err());
     fs::write(&path, b"not an image")?;
     assert!(import_generated_image(&store, &path, &cwd, Some(&cache)).is_err());
@@ -870,12 +926,13 @@ mod tests {
       &cwd,
       RequestKind::Assistant,
       vec![json!({"type":"text","text":"a".repeat(100_000)})],
-      Duration::from_millis(350),
+      Duration::from_secs(2),
       None,
       None,
     );
     let error = result.err().context("Backpressure unexpectedly succeeded")?;
-    assert!(started.elapsed() < Duration::from_secs(2), "Blocked write exceeded deadline: {error}");
+    assert!(path.with_extension("png.isolated").is_file(), "Fixture did not reply to isolation RPC");
+    assert!(started.elapsed() < Duration::from_secs(4), "Blocked write exceeded deadline: {error}");
     assert!(error.to_string().contains("deadline exceeded"), "{error}");
     let pid = fs::read_to_string(path.with_extension("png.pid"))?;
     assert!(!Command::new("/bin/kill")
@@ -888,13 +945,59 @@ mod tests {
   }
 
   #[test]
-  fn cancellation_terminates_and_reaps_the_active_child() -> Result<()> {
+  fn shutdown_waits_for_child_registration_and_rejects_later_spawns() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let bridge = Arc::new(CodexBridge::default());
+    let active = bridge.lifecycle.clone();
+    let (created, pid_receiver) = mpsc::channel();
+    let (resume, paused) = mpsc::channel();
+    let path = root.path().join("paused.png");
+    let command = fixture("timeout", &path);
+    let worker = thread::spawn(move || {
+      let transport = Transport::spawn_with_registration_hook(
+        command, Duration::from_secs(10), Some(active), |pid| {
+          created.send(pid).unwrap();
+          paused.recv().unwrap();
+        },
+      )?;
+      let mut transport = transport;
+      transport.initialize()
+    });
+    let pid = pid_receiver.recv_timeout(Duration::from_secs(2))?;
+    let closing = bridge.clone();
+    let (begun, begun_receiver) = mpsc::channel();
+    let (finished, finished_receiver) = mpsc::channel();
+    let closer = thread::spawn(move || {
+      begun.send(()).unwrap();
+      closing.shutdown();
+      finished.send(()).unwrap();
+    });
+    begun_receiver.recv_timeout(Duration::from_secs(2))?;
+    let returned_before_registration = finished_receiver.recv_timeout(Duration::from_millis(150)).is_ok();
+    resume.send(())?;
+    let _ = worker.join().unwrap();
+    closer.join().unwrap();
+    assert!(!returned_before_registration, "Shutdown returned while an OS child was unpublished");
+    assert!(!Command::new("/bin/kill").args(["-0", &pid.to_string()])
+      .stdout(Stdio::null()).stderr(Stdio::null()).status()?.success());
+    let later_path = root.path().join("later.png");
+    let result = Transport::spawn(fixture("timeout", &later_path),
+      Duration::from_millis(500), Some(bridge.lifecycle.clone()));
+    assert!(result.err().context("Closed bridge spawned a later child")?.to_string().contains("closing"));
+    assert!(!later_path.with_extension("png.pid").exists());
+    assert!(bridge.models().err().context("Closed bridge accepted a queued model request")?
+      .to_string().contains("closing"));
+    Ok(())
+  }
+
+  #[test]
+  fn shutdown_terminates_and_reaps_the_active_child() -> Result<()> {
     let root = tempfile::tempdir()?;
     let store = Arc::new(ProjectStore::new(root.path().into())?);
     let project = store.save_project(Project::new("Cancel", ProjectKind::Canvas, json!({})))?;
     let cwd = store.project_codex_dir(&project.id)?;
     let bridge = Arc::new(CodexBridge::default());
-    let active = bridge.maybe_child_pid.clone();
+    let active = bridge.lifecycle.clone();
     let command = fixture("timeout", &cwd.join("unused.png"));
     let worker = thread::spawn(move || {
       run_request(
@@ -909,13 +1012,13 @@ mod tests {
       )
     });
     let deadline = Instant::now() + Duration::from_secs(2);
-    while bridge.maybe_child_pid.lock().unwrap().is_none() && Instant::now() < deadline {
+    while bridge.lifecycle.state.lock().unwrap().maybe_pid.is_none() && Instant::now() < deadline {
       thread::sleep(Duration::from_millis(5));
     }
-    let pid = bridge.maybe_child_pid.lock().unwrap().context("Fixture did not start")?;
-    bridge.cancel();
+    let pid = bridge.lifecycle.state.lock().unwrap().maybe_pid.context("Fixture did not start")?;
+    bridge.shutdown();
     assert!(worker.join().unwrap().is_err());
-    assert!(bridge.maybe_child_pid.lock().unwrap().is_none());
+    assert!(bridge.lifecycle.state.lock().unwrap().maybe_pid.is_none());
     assert!(!Command::new("/bin/kill")
       .args(["-0", &pid.to_string()])
       .stdout(Stdio::null())
@@ -950,6 +1053,9 @@ for line in sys.stdin:
  elif method=='mcpServerStatus/list':
   data=[] if mode!='mcp_active' else [{'runtimeStatus':'connected','tools':{'bad':{}},'resources':[],'resourceTemplates':[]}]
   send({'id':id,'result':{'data':data,'nextCursor':None}})
+  if mode=='backpressure':
+   with open(path+'.isolated','w') as f: f.write('isolation replied; next write is turn/start')
+   time.sleep(5); sys.exit(0)
  elif method=='thread/start':
   if mode=='selected_model': assert r['params']['model']=='gpt-fixture'
   assert r['params']['config'].get('mcp_servers.fixture_server.enabled') is False
@@ -957,7 +1063,6 @@ for line in sys.stdin:
   assert r['params']['approvalPolicy']=='never'
   assert r['params']['sandbox']=='workspace-write'
   send({'id':id,'result':{'thread':{'id':'thread-fixture'}}})
-  if mode=='backpressure': time.sleep(3); sys.exit(0)
  elif method=='turn/start':
   if mode=='selected_model': assert r['params']['model']=='gpt-fixture'
   assert mode!='mcp_active'
