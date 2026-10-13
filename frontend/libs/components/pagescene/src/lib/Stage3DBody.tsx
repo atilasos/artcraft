@@ -81,6 +81,8 @@ const PAGE_ID: ModelPage = ModelPage.Stage3D;
 export interface Stage3DBodyProps {
   /** Show the bottom-right "Costs" cost-calculator button. */
   showCostCalculator?: boolean;
+  /** Disable provider controls and external library menus for local hosts. */
+  showGenerationControls?: boolean;
   /** Show the top-bar "Create 3D model from image" magic-wand button. */
   showImageTo3DButton?: boolean;
   /** Show the bottom-right help menu button. */
@@ -109,6 +111,7 @@ export interface Stage3DBodyProps {
 
 export const Stage3DBody = ({
   showCostCalculator = true,
+  showGenerationControls = true,
   showImageTo3DButton = true,
   showHelpMenu = true,
   modelSelectorPlacement = "bottom-left",
@@ -154,10 +157,11 @@ export const Stage3DBody = ({
   };
 
   useEffect(() => {
+    if (!showGenerationControls) return;
     window.onbeforeunload = () => {
       return "You may have unsaved changes.";
     };
-  }, []);
+  }, [showGenerationControls]);
 
   const selectedImageModel: ImageModel | undefined =
     useSelectedImageModel(PAGE_ID);
@@ -178,7 +182,7 @@ export const Stage3DBody = ({
   // effect the store stays empty and the trigger has no icon until the
   // user opens the popover and picks a model manually.
   useEffect(() => {
-    if (modelSelectorPlacement !== "prompt-box") return;
+    if (!showGenerationControls || modelSelectorPlacement !== "prompt-box") return;
     if (selectedImageModel) return;
     const models = stage3dModelList.map((i) => i.model).filter(
       (m): m is NonNullable<typeof m> => m !== undefined,
@@ -187,6 +191,7 @@ export const Stage3DBody = ({
     if (def) setSelectedModel(PAGE_ID, def);
   }, [
     modelSelectorPlacement,
+    showGenerationControls,
     selectedImageModel,
     setSelectedModel,
     stage3dModelList,
@@ -490,14 +495,14 @@ export const Stage3DBody = ({
             >
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 2xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
                 <div className="min-w-0 flex flex-col items-start gap-2">
-                  {!isRecord && <ControlsTopButtons />}
+                  {!isRecord && showGenerationControls && <ControlsTopButtons />}
                   {!isRecord && topBarStartSlot && (
                     <div className="pl-3">{topBarStartSlot}</div>
                   )}
                 </div>
                 <div className="col-span-2 row-start-2 flex flex-col items-center 2xl:col-span-1 2xl:col-start-2 2xl:row-start-1">
                   <SceneModePill />
-                  {!isRecord && (
+                  {!isRecord && showGenerationControls && (
                     <Controls3D showImageTo3DButton={showImageTo3DButton} />
                   )}
                 </div>
@@ -507,7 +512,7 @@ export const Stage3DBody = ({
                   {!isRecord && <CameraStatusPill />}
                   {!isRecord && <AspectRatioMenu />}
                   {!isRecord && topBarEndSlot}
-                  {!isRecord && <AnonHintChip />}
+                  {!isRecord && showGenerationControls && <AnonHintChip />}
                 </div>
               </div>
             </div>
@@ -515,7 +520,7 @@ export const Stage3DBody = ({
             {/* Outliner: vertically centered against the viewport. Sized in
                 vh — deliberately independent of the camera aspect ratio. */}
             <div
-              className={`absolute left-4 top-1/2 -translate-y-1/2${
+              className={`absolute left-4 top-1/2 -translate-y-1/2${showGenerationControls ? "" : " local-outliner"}${
                 isRecord ? " hidden" : ""
               }`}
             >
@@ -569,7 +574,7 @@ export const Stage3DBody = ({
               message={editorLoader.message}
             />
 
-            {modelSelectorPlacement === "bottom-left" && (
+            {showGenerationControls && modelSelectorPlacement === "bottom-left" && (
               <div className="absolute bottom-6 left-6 z-20 flex items-center gap-3">
                 <ClassyModelSelector
                   items={stage3dModelList}

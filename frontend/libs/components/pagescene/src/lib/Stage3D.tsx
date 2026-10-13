@@ -30,6 +30,8 @@ export interface Stage3DProps {
    *  to true so existing hosts (Tauri) keep their current chrome;
    *  hosts can opt out (e.g. the webapp suppresses it). */
   showCostCalculator?: boolean;
+  /** Disable provider controls and external library menus for local hosts. */
+  showGenerationControls?: boolean;
   /** Show the top-bar "Create 3D model from image" magic-wand
    *  shortcut. Defaults to true; hosts without an Image-to-3D
    *  destination (e.g. the webapp) can hide it. */
@@ -66,6 +68,7 @@ export const Stage3D = ({
   cacheJsonString,
   onSceneSerialized,
   showCostCalculator = true,
+  showGenerationControls = true,
   showImageTo3DButton = true,
   showHelpMenu = true,
   modelSelectorPlacement = "bottom-left",
@@ -92,6 +95,7 @@ export const Stage3D = ({
       onSceneSerialized={onSceneSerialized}
     >
       <Stage3DBody
+        showGenerationControls={showGenerationControls}
         showCostCalculator={showCostCalculator}
         showImageTo3DButton={showImageTo3DButton}
         showHelpMenu={showHelpMenu}

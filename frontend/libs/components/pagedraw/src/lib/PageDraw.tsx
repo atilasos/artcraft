@@ -282,6 +282,8 @@ interface PageDrawProps {
    * hosts that surface those elsewhere (e.g. the webapp) pass false.
    */
   showBottomRightControls?: boolean;
+  /** Local hosts disable cloud generation and background-removal actions. */
+  showGenerationControls?: boolean;
 }
 
 const PageDraw = ({
@@ -289,6 +291,7 @@ const PageDraw = ({
   backgroundClassName = "bg-ui-background",
   fillParentHeight = false,
   showBottomRightControls = true,
+  showGenerationControls = true,
 }: PageDrawProps) => {
   const canvas2dModelList = useCanvas2dPageModelList();
   const canvasWidth = useRef<number>(1024);
@@ -430,7 +433,7 @@ const PageDraw = ({
     useSelectedProviderForModel(PAGE_ID, selectedImageModel?.id);
 
   const supportsMaskedInpainting =
-    selectedImageModel?.usesInpaintingMask ?? false;
+    showGenerationControls && (selectedImageModel?.usesInpaintingMask ?? false);
 
   // Keyboard tool switching mirrors the SideToolbar buttons; size up/down
   // adjusts whichever size the active tool draws with (brush, eraser, and the
@@ -828,6 +831,7 @@ const PageDraw = ({
         selectedProvider?: GenerationProvider;
       },
     ) => {
+      if (!showGenerationControls) return;
       if (generateInFlightRef.current) return;
       generateInFlightRef.current = true;
       setIsGenerating(true);
@@ -968,6 +972,7 @@ const PageDraw = ({
       getMaskArrayBuffer,
       selectedImageModel,
       adapter,
+      showGenerationControls,
       baseImageBitmap,
       baseImageInfo,
       addPendingGeneration,
@@ -1125,6 +1130,7 @@ const PageDraw = ({
           toggleLock(selectedNodeIds);
           break;
         case "REMOVE_BACKGROUND": {
+          if (!showGenerationControls) return;
           const result = await beginRemoveBackground(selectedNodeIds);
           if (result) {
             await adapter.enqueueBgRemoval(result.base64, result.nodeId);
@@ -1156,6 +1162,7 @@ const PageDraw = ({
     },
     [
       selectedNodeIds,
+      showGenerationControls,
       toggleLock,
       beginRemoveBackground,
       adapter,
@@ -1263,7 +1270,7 @@ const PageDraw = ({
           the content area (right of the sidebar). It spans 0..right so the
           promptbox's own `left-1/2 -translate-x-1/2` centers within the content
           area — do NOT re-apply the sidebar offset or it double-shifts right. */}
-      <div
+      {showGenerationControls && <div
         className={`preserve-aspect-ratio fixed inset-x-0 bottom-0 z-10 ${
           isSelecting ? "pointer-events-none" : "pointer-events-auto"
         }`}
@@ -1290,7 +1297,7 @@ const PageDraw = ({
             />
           }
         />
-      </div>
+      </div>}
       <SideToolbar
         className="fixed left-0 top-[calc(50%_-_var(--pd-bottom-reserve,0px))] z-10 -translate-y-1/2 transform"
         onSelect={handleSelectTool}
@@ -1326,6 +1333,13 @@ const PageDraw = ({
             }
             return false;
           }}
+          items={!showGenerationControls ? [
+            { icon: null, label: "Bloquear / desbloquear", action: "LOCK" },
+            { icon: null, label: "Trazer para a frente", action: "BRING_TO_FRONT" },
+            { icon: null, label: "Enviar para trás", action: "SEND_TO_BACK" },
+            { icon: null, label: "Duplicar", action: "DUPLICATE" },
+            { icon: null, label: "Eliminar forma", action: "DELETE" },
+          ] : undefined}
           onMenuAction={handleMenuAction}
           isLocked={isLocked}
         >
