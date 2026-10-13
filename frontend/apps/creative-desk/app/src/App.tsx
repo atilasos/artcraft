@@ -217,9 +217,16 @@ export default function App() {
           )
             continue;
           if (
-            latest.name === saved.name &&
+            latest.name.trim() === saved.name &&
             JSON.stringify(newest) === JSON.stringify(saved.document)
           ) {
+            // Commit native name normalization only after the latest-edit
+            // barrier, so a rename made during the save cannot be overwritten.
+            if (latest.name !== saved.name) {
+              const normalized = { ...latest, name: saved.name };
+              activeRef.current = normalized;
+              setActive(normalized);
+            }
             revision.current = 0;
             setSaveState("saved");
             return;
