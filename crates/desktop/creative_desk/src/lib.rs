@@ -28,6 +28,7 @@ pub fn run() -> anyhow::Result<()> {
       commands::local_list_assets::local_list_assets,
       commands::local_read_asset::local_read_asset,
       commands::codex_status::codex_status,
+      commands::codex_models::codex_models,
       commands::codex_send::codex_send,
     ])
     .build(tauri::generate_context!())?

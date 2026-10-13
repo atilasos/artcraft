@@ -20,6 +20,13 @@ fn entry() -> Result<()> {
       root,
       args.iter().any(|arg| arg == "--codex-smoke"),
       args.iter().any(|arg| arg == "--codex-image-smoke"),
+      args
+        .iter()
+        .position(|arg| arg == "--codex-model")
+        .map(|index| {
+          args.get(index + 1).map(String::as_str).context("--codex-model requires a model ID")
+        })
+        .transpose()?,
     );
   }
   #[cfg(feature = "desktop")]
@@ -28,7 +35,12 @@ fn entry() -> Result<()> {
   anyhow::bail!("This build supports --smoke-test only; enable the desktop feature for the app")
 }
 
-fn smoke(root: PathBuf, codex_smoke: bool, image_smoke: bool) -> Result<()> {
+fn smoke(
+  root: PathBuf,
+  codex_smoke: bool,
+  image_smoke: bool,
+  maybe_model: Option<&str>,
+) -> Result<()> {
   let store = ProjectStore::new(root.clone())?;
   let project =
     store.save_project(Project::new("Smoke", ProjectKind::Canvas, json!({"layers":[{"x":17}]})))?;
@@ -46,6 +58,7 @@ fn smoke(root: PathBuf, codex_smoke: bool, image_smoke: bool) -> Result<()> {
       },
       if image_smoke { RequestKind::Image } else { RequestKind::Assistant },
       &[],
+      maybe_model,
     )?;
     result["codex"] = serde_json::to_value(reply)?;
   }

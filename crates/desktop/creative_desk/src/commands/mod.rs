@@ -7,3 +7,4 @@ pub mod local_list_assets;
 pub mod local_read_asset;
 pub mod codex_status;
 pub mod codex_send;
+pub mod codex_models;

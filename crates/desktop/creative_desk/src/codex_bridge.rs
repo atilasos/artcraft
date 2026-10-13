@@ -16,7 +16,11 @@ use crate::project_store::{Asset, ProjectStore};
 const TURN_TIMEOUT: Duration = Duration::from_secs(240);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_PROTOCOL_LINE: u64 = 32 * 1024 * 1024;
-const LOCAL_INSTRUCTIONS: &str = "You are the Creative Desk local creative assistant. Use only the user's prompt and files staged in the current workspace. Do not access ArtCraft services, unrelated apps, connectors, credentials, or files outside this workspace. Do not change account settings or login. For image requests use the native image generation tool and save real generated files in the current workspace. Never claim a generated image exists without a successful imageGeneration tool result. Answer in the user's language.";
+const DISABLED_FEATURES: &[&str] = &[
+  "apps", "plugins", "hooks", "multi_agent", "shell_tool", "unified_exec", "view_image",
+  "browser_use", "browser_use_external", "computer_use", "in_app_browser",
+];
+const LOCAL_INSTRUCTIONS: &str = "You are the Creative Desk local creative assistant. Use only the user's prompt and files staged in the current workspace. Do not access ArtCraft services, unrelated apps, connectors, credentials, or files outside this workspace. Do not change account settings or login. For image requests use the native image generation tool once. Creative Desk imports its completed tool output from the runtime image cache automatically; do not copy it or regenerate just to move the file. Never claim a generated image exists without a successful imageGeneration tool result. Answer in the user's language.";
 
 #[derive(Default)]
 pub struct CodexBridge {
@@ -30,6 +34,15 @@ pub struct CodexStatus {
   pub connected: bool,
   pub auth_mode: String,
   pub message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexModel {
+  pub id: String,
+  pub display_name: String,
+  pub is_default: bool,
+  pub efforts: Vec<String>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -55,7 +68,9 @@ struct Transport {
   deadline: Instant,
   next_id: u64,
   pending: Vec<Value>,
-  maybe_activity: Option<Arc<Mutex<Option<u32>>>>,
+  activity: Arc<Mutex<Option<u32>>>,
+  stop_deadline: mpsc::Sender<()>,
+  maybe_watchdog: Option<JoinHandle<()>>,
 }
 
 impl CodexBridge {
@@ -104,6 +119,18 @@ impl CodexBridge {
     }
   }
 
+  pub fn models(&self) -> Result<Vec<CodexModel>> {
+    let _guard = self.execution.try_lock().map_err(|_| anyhow::anyhow!("Codex is busy"))?;
+    let mut transport =
+      Transport::spawn(codex_command()?, STATUS_TIMEOUT, Some(self.maybe_child_pid.clone()))?;
+    transport.initialize()?;
+    ensure!(
+      transport.account_mode()? == "chatgpt",
+      "An existing managed ChatGPT login is required"
+    );
+    transport.models()
+  }
+
   pub fn send(
     &self,
     store: &ProjectStore,
@@ -111,6 +138,7 @@ impl CodexBridge {
     prompt: &str,
     kind: RequestKind,
     asset_ids: &[String],
+    maybe_model: Option<&str>,
   ) -> Result<CodexReply> {
     let _guard = self
       .execution
@@ -119,7 +147,7 @@ impl CodexBridge {
     ensure!(!prompt.trim().is_empty() && prompt.len() <= 100_000, "Prompt is empty or too large");
     let cwd = store.project_codex_dir(project_id)?;
     let mut input = vec![
-      json!({"type":"text", "text": if matches!(kind, RequestKind::Image) { format!("Generate an image with the native image generation tool, then save it in the current workspace. Request: {prompt}") } else { prompt.into() }}),
+      json!({"type":"text", "text": if matches!(kind, RequestKind::Image) { format!("Generate one image with the native image generation tool. Creative Desk imports the completed tool output automatically. Request: {prompt}") } else { prompt.into() }}),
     ];
     ensure!(asset_ids.len() <= 20, "Too many attached assets");
     for id in asset_ids {
@@ -148,6 +176,7 @@ impl CodexBridge {
       input,
       TURN_TIMEOUT,
       Some(self.maybe_child_pid.clone()),
+      maybe_model,
     )
   }
 }
@@ -162,9 +191,20 @@ impl Transport {
     #[cfg(unix)]
     command.process_group(0);
     let mut child = command.spawn().context("Cannot start the installed Codex CLI")?;
-    if let Some(activity) = &maybe_activity {
-      *activity.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(child.id());
-    }
+    let activity = maybe_activity.unwrap_or_default();
+    *activity.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(child.id());
+    let deadline = Instant::now() + timeout;
+    let (stop_deadline, stopped) = mpsc::channel();
+    let watchdog_activity = activity.clone();
+    let watchdog = thread::spawn(move || {
+      if matches!(stopped.recv_timeout(timeout), Err(mpsc::RecvTimeoutError::Timeout)) {
+        // The owner cannot reap while this lock is held, so the PID cannot be reused.
+        let guard = watchdog_activity.lock().unwrap_or_else(|poison| poison.into_inner());
+        if let Some(pid) = *guard {
+          kill_process_group(pid);
+        }
+      }
+    });
     let stdin = child.stdin.take().context("Codex stdin unavailable")?;
     let stdout = child.stdout.take().context("Codex stdout unavailable")?;
     let (sender, receiver) = mpsc::channel();
@@ -204,10 +244,12 @@ impl Transport {
       stdin,
       receiver,
       maybe_reader: Some(reader),
-      deadline: Instant::now() + timeout,
+      deadline,
       next_id: 0,
       pending: Vec::new(),
-      maybe_activity,
+      activity,
+      stop_deadline,
+      maybe_watchdog: Some(watchdog),
     })
   }
 
@@ -219,6 +261,84 @@ impl Transport {
   fn account_mode(&mut self) -> Result<String> {
     let account = self.request("account/read", json!({"refreshToken":false}))?;
     Ok(account["account"]["type"].as_str().unwrap_or("none").into())
+  }
+
+  fn models(&mut self) -> Result<Vec<CodexModel>> {
+    let mut models = Vec::new();
+    let mut cursor = Value::Null;
+    for _ in 0..20 {
+      let response =
+        self.request("model/list", json!({"cursor":cursor,"limit":100,"includeHidden":false}))?;
+      for model in response["data"].as_array().context("Codex model catalog is invalid")? {
+        models.push(parse_model(model)?);
+      }
+      cursor = next_cursor(&response)?;
+      if cursor.is_null() {
+        ensure!(!models.is_empty(), "Codex model catalog is empty");
+        return Ok(models);
+      }
+    }
+    bail!("Codex model catalog exceeds page limit")
+  }
+
+  fn isolated_config(&mut self, cwd: &Path) -> Result<Value> {
+    let response = self.request("config/read", json!({"cwd":cwd,"includeLayers":false}))?;
+    let config = response["config"].as_object().context("Codex effective config is invalid")?;
+    ensure!(config.get("web_search") == Some(&json!("disabled")),
+      "Codex web search isolation could not be established");
+    let features = config.get("features").and_then(Value::as_object)
+      .context("Codex feature isolation could not be established")?;
+    for name in DISABLED_FEATURES {
+      ensure!(features.get(*name) == Some(&json!(false)),
+        "Codex feature isolation could not be established");
+    }
+    ensure!(features.get("image_generation") == Some(&json!(true)),
+      "Codex native image generation is disabled");
+    let mut overrides = json!({"web_search":"disabled","features.image_generation":true,
+      "shell_environment_policy.inherit":"core"});
+    for name in DISABLED_FEATURES {
+      overrides[format!("features.{name}")] = json!(false);
+    }
+    if let Some(servers) = config.get("mcp_servers") {
+      for name in servers.as_object().context("Codex MCP configuration is invalid")?.keys() {
+        // Protocol dotted paths do not accept quoted segments. Refuse ambiguous names.
+        ensure!(
+          !name.is_empty()
+            && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'),
+          "Cannot safely isolate an inherited Codex MCP server name"
+        );
+        overrides[format!("mcp_servers.{name}.enabled")] = json!(false);
+      }
+    }
+    Ok(overrides)
+  }
+
+  fn verify_isolation(&mut self, thread_id: &str) -> Result<()> {
+    let mut cursor = Value::Null;
+    let mut count = 0usize;
+    for _ in 0..20 {
+      let response = self.request(
+        "mcpServerStatus/list",
+        json!({"threadId":thread_id,
+        "cursor":cursor,"limit":100,"detail":"full"}),
+      )?;
+      for server in response["data"].as_array().context("Codex MCP inventory is invalid")? {
+        ensure!(
+          server["runtimeStatus"] == "disabled"
+            && server["tools"].as_object().is_some_and(|tools| tools.is_empty())
+            && server["resources"].as_array().is_some_and(|resources| resources.is_empty())
+            && server["resourceTemplates"].as_array().is_some_and(|resources| resources.is_empty()),
+          "Codex tool isolation could not be established"
+        );
+        count += 1;
+      }
+      cursor = next_cursor(&response)?;
+      if cursor.is_null() {
+        log::info!("Creative Desk verified {count} disabled MCP servers and zero MCP tools");
+        return Ok(());
+      }
+    }
+    bail!("Codex MCP inventory exceeds page limit")
   }
 
   fn request(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -265,20 +385,25 @@ impl Transport {
   }
 
   fn write(&mut self, value: &Value) -> Result<()> {
-    serde_json::to_writer(&mut self.stdin, value)?;
-    self.stdin.write_all(b"\n")?;
-    self.stdin.flush()?;
-    Ok(())
+    let result = (|| -> Result<()> {
+      serde_json::to_writer(&mut self.stdin, value)?;
+      self.stdin.write_all(b"\n")?;
+      self.stdin.flush()?;
+      Ok(())
+    })();
+    ensure!(Instant::now() < self.deadline, "Codex request deadline exceeded");
+    result
   }
 }
 
 impl Drop for Transport {
   fn drop(&mut self) {
+    let _ = self.stop_deadline.send(());
+    if let Some(watchdog) = self.maybe_watchdog.take() {
+      let _ = watchdog.join();
+    }
     // Keep the advertised PID locked through reaping so cancellation cannot target a reused PID.
-    let mut maybe_guard = self
-      .maybe_activity
-      .as_ref()
-      .map(|activity| activity.lock().unwrap_or_else(|poison| poison.into_inner()));
+    let mut activity = self.activity.lock().unwrap_or_else(|poison| poison.into_inner());
     // The child gets its own process group so tool subprocesses cannot outlive it.
     kill_process_group(self.child.id());
     let _ = self.child.kill();
@@ -286,9 +411,7 @@ impl Drop for Transport {
     if let Some(reader) = self.maybe_reader.take() {
       let _ = reader.join();
     }
-    if let Some(activity) = maybe_guard.as_mut() {
-      **activity = None;
-    }
+    *activity = None;
   }
 }
 
@@ -300,15 +423,24 @@ fn run_request(
   input: Vec<Value>,
   timeout: Duration,
   maybe_activity: Option<Arc<Mutex<Option<u32>>>>,
+  maybe_model: Option<&str>,
 ) -> Result<CodexReply> {
   command.current_dir(cwd);
   let mut transport = Transport::spawn(command, timeout, maybe_activity)?;
   transport.initialize()?;
   ensure!(transport.account_mode()? == "chatgpt", "An existing managed ChatGPT login is required");
-  let thread = transport.request("thread/start", json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"workspace-write","ephemeral":true,"modelProvider":"openai","developerInstructions":LOCAL_INSTRUCTIONS,"config":{"web_search":"disabled","features.apps":false,"features.multi_agent":false}}))?;
+  if let Some(model) = maybe_model {
+    ensure!(
+      transport.models()?.iter().any(|entry| entry.id == model),
+      "Selected Codex model is unavailable"
+    );
+  }
+  let config = transport.isolated_config(cwd)?;
+  let thread = transport.request("thread/start", json!({"cwd":cwd,"approvalPolicy":"never","sandbox":"workspace-write","ephemeral":true,"modelProvider":"openai","model":maybe_model,"developerInstructions":LOCAL_INSTRUCTIONS,"config":config}))?;
   let thread_id =
     thread["thread"]["id"].as_str().context("Codex thread response has no ID")?.to_owned();
-  let turn = transport.request("turn/start", json!({"threadId":thread_id,"input":input,"cwd":cwd,"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true}}))?;
+  transport.verify_isolation(&thread_id)?;
+  let turn = transport.request("turn/start", json!({"threadId":thread_id,"model":maybe_model,"input":input,"cwd":cwd,"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false,"excludeTmpdirEnvVar":true,"excludeSlashTmp":true}}))?;
   let turn_id = turn["turn"]["id"].as_str().context("Codex turn response has no ID")?.to_owned();
   let mut messages = Vec::new();
   let mut generated_paths = Vec::new();
@@ -348,7 +480,7 @@ fn run_request(
   }
   let mut assets = Vec::new();
   for path in generated_paths {
-    assets.push(import_generated_image(store, &path, cwd)?);
+    assets.push(import_generated_image(store, &path, cwd, native_image_cache_dir(&thread_id).as_deref())?);
   }
   ensure!(
     !matches!(kind, RequestKind::Image) || !assets.is_empty(),
@@ -356,6 +488,37 @@ fn run_request(
   );
   ensure!(!messages.is_empty() || !assets.is_empty(), "Codex completed without a reply");
   Ok(CodexReply { message: messages.join("\n\n"), thread_id, assets })
+}
+
+fn parse_model(value: &Value) -> Result<CodexModel> {
+  let id = protocol_string(&value["id"], "model ID")?;
+  let display_name = protocol_string(&value["displayName"], "model display name")?;
+  let is_default = value["isDefault"].as_bool().context("Codex model default flag is invalid")?;
+  let efforts = value["supportedReasoningEfforts"]
+    .as_array()
+    .context("Codex model efforts are invalid")?
+    .iter()
+    .map(|effort| protocol_string(&effort["reasoningEffort"], "reasoning effort"))
+    .collect::<Result<Vec<_>>>()?;
+  Ok(CodexModel { id, display_name, is_default, efforts })
+}
+
+fn protocol_string(value: &Value, name: &str) -> Result<String> {
+  let text = value.as_str().with_context(|| format!("Codex {name} is invalid"))?;
+  ensure!(
+    !text.trim().is_empty() && text.len() <= 256 && !text.chars().any(char::is_control),
+    "Codex {name} is invalid"
+  );
+  Ok(text.into())
+}
+
+fn next_cursor(response: &Value) -> Result<Value> {
+  let cursor = response.get("nextCursor").unwrap_or(&Value::Null);
+  ensure!(
+    cursor.is_null() || cursor.as_str().is_some_and(|text| !text.is_empty()),
+    "Codex pagination cursor is invalid"
+  );
+  Ok(cursor.clone())
 }
 
 fn collect_item(
@@ -391,16 +554,29 @@ fn collect_item(
   Ok(())
 }
 
-fn import_generated_image(store: &ProjectStore, path: &Path, cwd: &Path) -> Result<Asset> {
+fn import_generated_image(
+  store: &ProjectStore,
+  path: &Path,
+  cwd: &Path,
+  maybe_cache_dir: Option<&Path>,
+) -> Result<Asset> {
   ensure!(
     path.is_absolute() && !path.is_symlink(),
     "Generated image path must be an absolute regular file"
   );
   let canonical = path.canonicalize().context("Generated image file does not exist")?;
-  ensure!(
-    canonical.starts_with(cwd.canonicalize()?),
-    "Generated image must be saved in the project workspace"
-  );
+  if !canonical.starts_with(cwd.canonicalize()?) {
+    let cache = maybe_cache_dir.context("Generated image must be saved in the project workspace")?;
+    ensure!(!cache.is_symlink() && cache.parent().is_some_and(|parent| !parent.is_symlink()),
+      "Generated image cache cannot be a symlink");
+    ensure!(canonical.parent() == Some(cache.canonicalize()?.as_path()),
+      "Generated image must be saved in the project workspace or current thread image cache");
+    let stem = canonical.file_stem().and_then(|name| name.to_str())
+      .and_then(|name| name.strip_prefix("exec-"))
+      .context("Generated image cache filename is invalid")?;
+    ensure!(uuid::Uuid::parse_str(stem).is_ok_and(|id| id.to_string() == stem),
+      "Generated image cache filename is invalid");
+  }
   ensure!(canonical.is_file(), "Generated image is not a file");
   ensure!(
     fs::metadata(&canonical)?.len() <= 256 * 1024 * 1024,
@@ -417,6 +593,16 @@ fn import_generated_image(store: &ProjectStore, path: &Path, cwd: &Path) -> Resu
     bail!("Generated file is not a supported PNG, JPEG or WebP image");
   };
   store.import_bytes("Codex image", mime, &bytes)
+}
+
+fn native_image_cache_dir(thread_id: &str) -> Option<PathBuf> {
+  let id = uuid::Uuid::parse_str(thread_id).ok()?;
+  if id.to_string() != thread_id {
+    return None;
+  }
+  let home = std::env::var_os("CODEX_HOME").map(PathBuf::from)
+    .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex")))?;
+  Some(home.join("generated_images").join(thread_id))
 }
 
 fn kill_process_group(pid: u32) {
@@ -445,7 +631,11 @@ fn codex_command() -> Result<Command> {
     .find(|path| path.is_file())
     .context("Codex CLI is not installed or is not on PATH")?;
   let mut command = Command::new(executable);
-  command.args(["app-server", "--listen", "stdio://"]);
+  command.args(["app-server", "--listen", "stdio://", "--enable", "image_generation",
+    "-c", "web_search=\"disabled\"", "-c", "shell_environment_policy.inherit=\"core\""]);
+  for name in DISABLED_FEATURES {
+    command.args(["--disable", name]);
+  }
   Ok(command)
 }
 
@@ -463,6 +653,7 @@ fn send_with_command(
     kind,
     vec![json!({"type":"text","text":"fixture"})],
     Duration::from_millis(750),
+    None,
     None,
   )
 }
@@ -557,6 +748,146 @@ mod tests {
   }
 
   #[test]
+  fn native_cache_import_requires_current_thread_and_regular_image() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().join("store"))?;
+    let project = store.save_project(Project::new("Cache", ProjectKind::Canvas, json!({})))?;
+    let cwd = store.project_codex_dir(&project.id)?;
+    let cache = root.path().join("generated_images").join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&cache)?;
+    let path = cache.join(format!("exec-{}.png", uuid::Uuid::new_v4()));
+    fs::write(&path, b"\x89PNG\r\n\x1a\nfixture")?;
+    assert_eq!(import_generated_image(&store, &path, &cwd, Some(&cache))?.mime_type, "image/png");
+    let other_thread = cache.parent().unwrap().join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&other_thread)?;
+    let foreign = other_thread.join(path.file_name().unwrap());
+    fs::copy(&path, &foreign)?;
+    assert!(import_generated_image(&store, &foreign, &cwd, Some(&cache)).is_err());
+    fs::write(cache.join("unrelated.png"), b"\x89PNG\r\n\x1a\nfixture")?;
+    assert!(import_generated_image(&store, &cache.join("unrelated.png"), &cwd, Some(&cache)).is_err());
+    fs::write(&path, b"not an image")?;
+    assert!(import_generated_image(&store, &path, &cwd, Some(&cache)).is_err());
+    #[cfg(unix)] {
+      fs::remove_file(&path)?;
+      std::os::unix::fs::symlink(&foreign, &path)?;
+      assert!(import_generated_image(&store, &path, &cwd, Some(&cache)).is_err());
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn rejects_effective_config_that_keeps_hooks_enabled() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().into())?;
+    let project = store.save_project(Project::new("Hooks", ProjectKind::Canvas, json!({})))?;
+    let error = send_with_command(fixture("hooks_enabled", &root.path().join("unused.png")),
+      &store, &project.id, RequestKind::Assistant).err().context("Enabled hooks were accepted")?;
+    assert!(error.to_string().contains("isolation"), "{error}");
+    Ok(())
+  }
+
+  #[test]
+  fn rejects_active_mcp_tools_before_inference() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().into())?;
+    let project = store.save_project(Project::new("Isolation", ProjectKind::Canvas, json!({})))?;
+    let error = send_with_command(
+      fixture("mcp_active", &root.path().join("unused.png")),
+      &store,
+      &project.id,
+      RequestKind::Assistant,
+    )
+    .err()
+    .context("Active MCP tools were accepted")?;
+    assert!(error.to_string().contains("isolation"), "{error}");
+    Ok(())
+  }
+
+  #[test]
+  fn selected_model_is_validated_and_sent_only_to_the_request() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().into())?;
+    let project = store.save_project(Project::new("Model", ProjectKind::Canvas, json!({})))?;
+    let cwd = store.project_codex_dir(&project.id)?;
+    for model in ["gpt-fixture", "unknown-model"] {
+      let result = run_request(
+        fixture("selected_model", &cwd.join("unused.png")),
+        &store,
+        &cwd,
+        RequestKind::Assistant,
+        vec![json!({"type":"text","text":"test"})],
+        Duration::from_secs(2),
+        None,
+        Some(model),
+      );
+      if model == "gpt-fixture" {
+        assert_eq!(result?.message, "Fixture reply");
+      } else {
+        assert!(result
+          .err()
+          .context("Unknown model accepted")?
+          .to_string()
+          .contains("unavailable"));
+      }
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn model_catalog_validates_and_projects_safe_fields() -> Result<()> {
+    let model = json!({"id":"gpt-fixture","displayName":"Fixture","isDefault":true,
+      "supportedReasoningEfforts":[{"reasoningEffort":"low","description":"Low"}],
+      "ignoredSensitiveField":"must not be returned"});
+    let parsed = parse_model(&model)?;
+    assert_eq!(
+      serde_json::to_value(parsed)?,
+      json!({"id":"gpt-fixture",
+      "displayName":"Fixture","isDefault":true,"efforts":["low"]})
+    );
+    for bad in [
+      json!({}),
+      json!({"id":"","displayName":"Fixture","isDefault":true,
+      "supportedReasoningEfforts":[]}),
+      json!({"id":"gpt-fixture","displayName":"Fixture",
+      "isDefault":"true","supportedReasoningEfforts":[]}),
+    ] {
+      assert!(parse_model(&bad).is_err());
+    }
+    Ok(())
+  }
+
+  #[test]
+  fn deadline_bounds_stdin_backpressure_and_reaps_child() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let store = ProjectStore::new(root.path().into())?;
+    let project = store.save_project(Project::new("Pressure", ProjectKind::Canvas, json!({})))?;
+    let cwd = store.project_codex_dir(&project.id)?;
+    let path = cwd.join("unused.png");
+    let started = Instant::now();
+    let result = run_request(
+      fixture("backpressure", &path),
+      &store,
+      &cwd,
+      RequestKind::Assistant,
+      vec![json!({"type":"text","text":"a".repeat(100_000)})],
+      Duration::from_millis(350),
+      None,
+      None,
+    );
+    let error = result.err().context("Backpressure unexpectedly succeeded")?;
+    assert!(started.elapsed() < Duration::from_secs(2), "Blocked write exceeded deadline: {error}");
+    assert!(error.to_string().contains("deadline exceeded"), "{error}");
+    let pid = fs::read_to_string(path.with_extension("png.pid"))?;
+    assert!(!Command::new("/bin/kill")
+      .args(["-0", pid.trim()])
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .status()?
+      .success());
+    Ok(())
+  }
+
+  #[test]
   fn cancellation_terminates_and_reaps_the_active_child() -> Result<()> {
     let root = tempfile::tempdir()?;
     let store = Arc::new(ProjectStore::new(root.path().into())?);
@@ -574,6 +905,7 @@ mod tests {
         vec![json!({"type":"text","text":"test"})],
         Duration::from_secs(20),
         Some(active),
+        None,
       )
     });
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -611,11 +943,24 @@ for line in sys.stdin:
  elif method=='account/read':
   assert r['params']=={'refreshToken':False}
   send({'id':id,'result':{'account':{'type':'chatgpt'}}})
+ elif method=='model/list':
+  send({'id':id,'result':{'data':[{'id':'gpt-fixture','displayName':'Fixture','isDefault':True,'supportedReasoningEfforts':[{'reasoningEffort':'low'}]}],'nextCursor':None}})
+ elif method=='config/read':
+  send({'id':id,'result':{'config':{'web_search':'disabled','features':{'apps':False,'plugins':False,'hooks':mode=='hooks_enabled','multi_agent':False,'image_generation':True,**{n:False for n in ['shell_tool','unified_exec','view_image','browser_use','browser_use_external','computer_use','in_app_browser']}},'mcp_servers':{'fixture_server':{'enabled':True}}}}})
+ elif method=='mcpServerStatus/list':
+  data=[] if mode!='mcp_active' else [{'runtimeStatus':'connected','tools':{'bad':{}},'resources':[],'resourceTemplates':[]}]
+  send({'id':id,'result':{'data':data,'nextCursor':None}})
  elif method=='thread/start':
+  if mode=='selected_model': assert r['params']['model']=='gpt-fixture'
+  assert r['params']['config'].get('mcp_servers.fixture_server.enabled') is False
+  assert all(r['params']['config'].get('features.'+n) is False for n in ['apps','plugins','hooks','multi_agent'])
   assert r['params']['approvalPolicy']=='never'
   assert r['params']['sandbox']=='workspace-write'
   send({'id':id,'result':{'thread':{'id':'thread-fixture'}}})
+  if mode=='backpressure': time.sleep(3); sys.exit(0)
  elif method=='turn/start':
+  if mode=='selected_model': assert r['params']['model']=='gpt-fixture'
+  assert mode!='mcp_active'
   assert r['params']['sandboxPolicy']['networkAccess']==False
   if mode=='rpc_error': send({'id':id,'error':{'code':-1,'message':'Fixture RPC error'}}); continue
   if mode=='eof': sys.exit(0)

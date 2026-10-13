@@ -34,7 +34,8 @@ local_import_asset({name:string,mimeType:string,bytesBase64:string}): Promise<As
 local_list_assets(): Promise<Asset[]>;
 local_read_asset({id:string}): Promise<{asset:Asset,dataUrl:string}>;
 codex_status(): Promise<{connected:boolean,authMode:string,message:string}>;
-codex_send({projectId:string,prompt:string,kind:"assistant"|"image",assetIds:string[]}):
+codex_models(): Promise<{id:string,displayName:string,isDefault:boolean,efforts:string[]}[]>;
+codex_send({projectId:string,prompt:string,kind:"assistant"|"image",assetIds:string[],maybeModel?:string|null}):
   Promise<{message:string,threadId:string,assets:Asset[]}>;
 ```
 
