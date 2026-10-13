@@ -17,6 +17,7 @@ members = [
   "crates/api_clients/worldlabs_api_client",
   "crates/api_clients/worldlabs_consumer_client",
   "crates/desktop/artcraft",
+  "crates/desktop/creative_desk",
   "crates/lib/artcraft_client_identity",
   "crates/lib/browser_emulation",
   "crates/lib/build_metadata",
@@ -43,7 +44,7 @@ members = [
   "crates/testing/test_utils",
   "crates/vendor/tauri-plugin-http",
 ]
-default-members = ["crates/desktop/artcraft"]
+default-members = ["crates/desktop/creative_desk"]
 
 [workspace.package]
 publish = false
