@@ -27,7 +27,7 @@
 
 ```ts
 local_workspace_info(): Promise<{rootPath:string; applicationId:string}>;
-local_list_projects(): Promise<Project[]>;
+local_list_projects(): Promise<{projects:Project[],warnings:string[]}>;
 local_save_project({project:Project}): Promise<Project>;
 local_load_project({id:string}): Promise<Project>;
 local_import_asset({name:string,mimeType:string,bytesBase64:string}): Promise<Asset>;
@@ -68,17 +68,17 @@ assert!(store.load_project("../../outside").is_err());
 
 The interface is a restrained creative desk in Portuguese, with project navigation, explicit save state, image/video/audio/GLB imports and native media previews, the existing 2D canvas and 3D editor, and a Codex sidebar. A dark neutral work area and warm paper-like navigation are appropriate; use installed fonts without network loading. Show real loading/error/empty states. Avoid unsupported cloud/provider controls. The assistant and image generation are explicit user-triggered actions and return actual messages/local files.
 
-2D documents include the existing `useSceneStore.exportSceneAsJson()` output AND baseImageInfo/background dimensions, because upstream serialization omits the base image. Base images and GLB references must refer to persistent owned local assets or embed data. Ensure export/import preserves imported images and 3D node parameters; fix only gaps exposed by roundtrip tests. Loading a document resets the old state before restoring so project A cannot leak into B.
+2D documents include the existing `useSceneStore.exportSceneAsJson()` output AND baseImageInfo/background dimensions, because upstream serialization omits the base image. Base images and GLB references must refer to persistent owned local assets or embed data. Ensure export/import preserves imported images and 3D node parameters; fix only gaps exposed by roundtrip tests. Loading a document resets the old state before restoring so project A cannot leak into B. Restore an image base only after its asynchronous bitmap load settles, then restore draw nodes; otherwise the upstream base-image onload clears restored nodes. Expose restoreCanvasDocument as an async function and prevent stale asynchronous loads from overwriting a later project.
 
 3D uses `Stage3D` with a local `PageSceneAdapter`: save/load scene JSON via the store; asset lookups only by owned asset IDs; fetchAsset rejects remote URLs; local asset and project listings replace cloud libraries. Existing token/owner hooks must express local ownership and never construct an ArtCraft session. Add an optional generation-controls prop to hide model/cost/login UI without changing default upstream hosts. Ensure 3D engine canvases always mount. Save button uses the live engine serialization and reopen restores camera/objects/timeline. New blank scenes must be editable with built-in primitives. Expose local GLB import if the existing adapter allows it; do not advertise unsupported formats.
 
 - [ ] Write failing tests for project parsing and 2D document roundtrip. Example assertions:
 
 ```ts
-expect(parseProject({...validProject, schemaVersion:2})).toThrow();
-expect(parseProject({...validProject, id:"../../outside"})).toThrow();
+expect(() => parseProject({...validProject, schemaVersion:2})).toThrow();
+expect(() => parseProject({...validProject, id:"../../outside"})).toThrow();
 const serialized = await serializeCanvasDocument();
-restoreCanvasDocument(serialized);
+await restoreCanvasDocument(serialized);
 expect(useSceneStore.getState().baseImageInfo?.blankCanvasWidth).toBe(640);
 expect(useSceneStore.getState().drawNodes[0].x).toBe(17);
 ```

@@ -31,7 +31,6 @@
           "tauri://localhost"
         ],
         "connect-src": [
-          "https://www.notrealsmart.com.au",
           "'self'",
           "'unsafe-eval'",
           "'unsafe-inline'",

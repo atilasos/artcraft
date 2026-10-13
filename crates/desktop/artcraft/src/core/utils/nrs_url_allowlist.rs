@@ -34,7 +34,6 @@ pub const NRS_ALLOWED_DOMAINS: &[&str] = &[
   "kinovi.ai",
   "seedance2-pro.com",
   "gmicloud.ai",
-  "notrealsmart.com.au",
 ];
 
 pub fn is_allowed_url(url: &str) -> bool {
@@ -58,12 +57,12 @@ mod tests {
     assert!(is_allowed_url("https://cdn-2.fakeyou.com/media/a.png"));
     assert!(is_allowed_url("https://api.storyteller.ai/v1/x"));
     assert!(is_allowed_url("https://pub-abc.r2.dev/media/a.jpg"));
-    assert!(is_allowed_url("https://www.notrealsmart.com.au/api/nrs/mcp"));
   }
 
   #[test]
   fn refuses_other_hosts_schemes_and_lookalikes() {
     assert!(!is_allowed_url("https://example.com/a.png"));
+    assert!(!is_allowed_url("https://www.notrealsmart.com.au/api/nrs/mcp"));
     assert!(!is_allowed_url("http://cdn-2.fakeyou.com/a.png"));
     assert!(!is_allowed_url("https://fakeyou.com.evil.example/a.png"));
     assert!(!is_allowed_url("https://evilfakeyou.com/a.png"));

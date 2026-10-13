@@ -172,12 +172,6 @@
           "url": "https://*.gmicloud.ai"
         },
         {
-          "url": "https://notrealsmart.com.au"
-        },
-        {
-          "url": "https://*.notrealsmart.com.au"
-        },
-        {
           "url": "http://localhost:12345"
         }
       ]
