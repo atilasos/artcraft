@@ -12,6 +12,7 @@ import * as bridge from "./bridge";
 import {
   blankCanvasDocument,
   cancelCanvasRestore,
+  jsonValuesEqual,
   parseDocument,
   restoreCanvasDocument,
   serializeCanvasDocument,
@@ -218,7 +219,7 @@ export default function App() {
             continue;
           if (
             latest.name.trim() === saved.name &&
-            JSON.stringify(newest) === JSON.stringify(saved.document)
+            jsonValuesEqual(newest, saved.document)
           ) {
             // Commit native name normalization only after the latest-edit
             // barrier, so a rename made during the save cannot be overwritten.

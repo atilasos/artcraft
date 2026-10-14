@@ -3,6 +3,7 @@ import { Node } from "../../../../libs/components/pagedraw/src/lib/Node";
 import { useSceneStore } from "../../../../libs/components/pagedraw/src/lib/stores/SceneState";
 import {
   cancelCanvasRestore,
+  jsonValuesEqual,
   parseProject,
   restoreCanvasDocument,
   serializeCanvasDocument,
@@ -219,5 +220,34 @@ describe("scene document boundary", () => {
         },
       }),
     ).toThrow();
+  });
+});
+
+describe("JSON document equality", () => {
+  it("ignores nested object property ordering returned by native storage", () => {
+    const live = {
+      version: 1,
+      scene: { drawNodes: [{ id: "a", x: 17, y: 29 }], fillColor: "#fff" },
+    };
+    const native = {
+      scene: { fillColor: "#fff", drawNodes: [{ y: 29, x: 17, id: "a" }] },
+      version: 1,
+    };
+    expect(jsonValuesEqual(live, native)).toBe(true);
+  });
+  it("keeps actual values, value types and missing properties significant", () => {
+    expect(jsonValuesEqual({ x: 0.45000000000000007 }, { x: 0.45 })).toBe(
+      false,
+    );
+    expect(jsonValuesEqual({ x: 17 }, { x: 83 })).toBe(false);
+    expect(jsonValuesEqual({ x: 17 }, { x: "17" })).toBe(false);
+    expect(jsonValuesEqual({ x: null }, {})).toBe(false);
+  });
+  it("preserves array order, length and array versus object distinctions", () => {
+    expect(
+      jsonValuesEqual([{ id: "a" }, { id: "b" }], [{ id: "b" }, { id: "a" }]),
+    ).toBe(false);
+    expect(jsonValuesEqual([1], [1, 2])).toBe(false);
+    expect(jsonValuesEqual([], {})).toBe(false);
   });
 });

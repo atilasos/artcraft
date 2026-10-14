@@ -105,12 +105,77 @@ try {
     );
     assert.deepEqual(names, ["Primeiro", "Segundo"]);
   });
+  await check(
+    "document edit and array reorder during native-sorted save",
+    async (page) => {
+      const id = await projectId(page);
+      const ids = await page.evaluate(() => {
+        window.__CREATIVE_DESK_EDITOR__.addRectangle();
+        return window.__CREATIVE_DESK_EDITOR__
+          .canvasState()
+          .drawNodes.map((node) => node.id);
+      });
+      await page.evaluate(() => {
+        window.__CREATIVE_DESK_SAVE_TEST__.deferSaves = true;
+      });
+      await click(page, "save-project");
+      await page.waitForFunction(
+        () => window.__CREATIVE_DESK_SAVE_TEST__.writes.length === 1,
+      );
+      await page.evaluate((ids) => {
+        const state = window.__CREATIVE_DESK_EDITOR__.canvasState();
+        state.updateNode(ids[0], { x: 83 }, true);
+        state.bringToFront([ids[0]]);
+      }, ids);
+      await click(page, "new-canvas");
+      await page.evaluate(() =>
+        window.__CREATIVE_DESK_SAVE_TEST__.releaseNext(),
+      );
+      await page.waitForFunction(
+        () => window.__CREATIVE_DESK_SAVE_TEST__.writes.length === 2,
+      );
+      assert.equal(
+        await projectId(page),
+        id,
+        "navigation must await the changed document",
+      );
+      const first = await page.evaluate(
+        (id) => window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id),
+        id,
+      );
+      assert.deepEqual(
+        first.document.scene.drawNodes.map((node) => node.id),
+        ids,
+      );
+      assert.equal(first.document.scene.drawNodes[0].x, 17);
+      await page.evaluate(() =>
+        window.__CREATIVE_DESK_SAVE_TEST__.releaseNext(),
+      );
+      await page.waitForFunction(
+        (id) =>
+          document
+            .querySelector('[data-testid="workspace"]')
+            ?.getAttribute("data-project-id") !== id,
+        id,
+      );
+      const saved = await page.evaluate(
+        (id) => window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id),
+        id,
+      );
+      assert.deepEqual(
+        saved.document.scene.drawNodes.map((node) => node.id),
+        [ids[1], ids[0]],
+      );
+      assert.equal(saved.document.scene.drawNodes[1].x, 83);
+      assert.equal(await writeCount(page), 2);
+    },
+  );
 } finally {
   await browser.close();
 }
 if (failures.length) throw new Error(failures.join("\n"));
 console.log(
-  "PASS: 3 actual App save/navigation regressions, no page errors or remote requests",
+  "PASS: 4 actual App native-sorted save/navigation regressions, no page errors or remote requests",
 );
 
 async function check(label, exercise) {
@@ -133,7 +198,19 @@ async function check(label, exercise) {
     return route.abort();
   });
   await page.addInitScript(() => {
-    const clone = (value) => JSON.parse(JSON.stringify(value));
+    // Match serde_json's object maps, while retaining semantic array order.
+    const clone = (value) =>
+      JSON.parse(
+        JSON.stringify(value, (_, current) =>
+          current && typeof current === "object" && !Array.isArray(current)
+            ? Object.fromEntries(
+                Object.keys(current)
+                  .sort()
+                  .map((key) => [key, current[key]]),
+              )
+            : current,
+        ),
+      );
     const state = {
       projects: new Map(),
       writes: [],
@@ -166,7 +243,10 @@ async function check(label, exercise) {
           case "local_load_project":
             return clone(state.projects.get(args.id));
           case "local_save_project": {
-            const project = clone(args.project);
+            const project = {
+              ...clone(args.project),
+              updatedAt: new Date().toISOString().replace("Z", "+00:00"),
+            };
             state.writes.push(project);
             // Bound the pre-fix loop so the failing regression cannot flood writes.
             if (state.writes.length > 4)
