@@ -30,7 +30,9 @@ Feche a aplicação antes de reconstruir ou instalar o pacote. Na raiz do reposi
 script/creative-desk/build-macos.sh --install
 ```
 
-O script compila o frontend e o executável com `custom-protocol`, inclui o frontend no executável, monta e assina `target/creative-desk-macos/Creative Desk.app` e instala em `/Applications`. Se essa pasta não for gravável, usa `~/Applications`. Não instala dependências. Recusa substituir um bundle com outro identificador ou com symlinks. Não altera credenciais nem dados anteriores.
+O script compila o frontend e o executável com `custom-protocol` e incorpora o frontend no executável. Monta, assina e verifica um pacote novo antes de substituir `target/creative-desk-macos/Creative Desk.app`. A instalação segue o mesmo processo em `/Applications`; se essa pasta não for gravável, usa `~/Applications`.
+
+Antes de substituir um pacote existente, valida o identificador e recusa symlinks. Move o pacote anterior inteiro para uma pasta `.creative-desk-backup.*` ao lado do destino e mostra esse caminho. Os ficheiros antigos, incluindo recursos locais desconhecidos, ficam nessa cópia e não entram na nova aplicação. As cópias de segurança e pastas temporárias são preservadas. O script não instala dependências nem altera credenciais ou `~/CreativeDesk`.
 
 Para verificar o editor real num navegador, mantenha o servidor local aberto num terminal:
 
