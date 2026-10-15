@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageDraw, Node, useSceneStore } from "@storyteller/ui-pagedraw";
 import {
   Stage3D,
@@ -70,6 +70,13 @@ export default function App() {
   const codexLock = useRef(false);
 
   const reportError = (message: string) => setError(message);
+  const onAssetImported = useCallback((asset: bridge.Asset) => {
+    setAssets((items) => [
+      asset,
+      ...items.filter((item) => item.id !== asset.id),
+    ]);
+    setPreview(asset);
+  }, []);
   const markDirty = () => {
     if (!activeRef.current || restoring.current) return;
     revision.current++;
@@ -310,11 +317,7 @@ export default function App() {
     try {
       for (const file of Array.from(files)) {
         const asset = await bridge.importAsset(file);
-        setAssets((items) => [
-          asset,
-          ...items.filter((a) => a.id !== asset.id),
-        ]);
-        setPreview(asset);
+        onAssetImported(asset);
       }
     } catch (error) {
       setError(bridge.errorText(error));
@@ -434,9 +437,10 @@ export default function App() {
               await saveCurrent();
             },
             onError: reportError,
+            onAssetImported,
           })
         : null,
-    [active?.id],
+    [active?.id, onAssetImported],
   );
 
   useEffect(() => {

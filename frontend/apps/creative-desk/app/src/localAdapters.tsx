@@ -49,10 +49,12 @@ export function createSceneAdapter({
   project,
   save,
   onError,
+  onAssetImported,
 }: {
   project: Project;
   save(document: unknown): Promise<void>;
   onError(message: string): void;
+  onAssetImported(asset: Asset): void;
 }): PageSceneAdapter {
   const ownedUrls = new Map<string, string>();
   const mediaUrl = async (id: string) => {
@@ -159,10 +161,8 @@ export function createSceneAdapter({
       );
       return asset.id;
     },
-    openMediaLightbox: () =>
-      onError(
-        "A captura foi guardada nos recursos locais. Consulte a lista de recursos.",
-      ),
+    openMediaLightbox: async (id) =>
+      onAssetImported((await readAsset(id)).asset),
     performLogout: () => onError("Esta aplicação usa apenas projetos locais."),
     onError: ({ message }) => onError(message),
   };

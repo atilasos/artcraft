@@ -244,12 +244,65 @@ try {
       );
     },
   );
+  await check(
+    "scene capture appears in local resources without remount",
+    async (page) => {
+      await click(page, "new-scene");
+      await sceneReady(page);
+      await page.evaluate(() => window.__CREATIVE_DESK_EDITOR__.addCube());
+      await page.evaluate(async (url) => {
+        const editor = (await import(url)).getActiveEditor();
+        window.__captureEditor = editor;
+        const { captureStill } = await import(
+          url.replace(
+            "contexts/EngineContext/EngineContext.tsx",
+            "actions/recordOutput.ts",
+          )
+        );
+        captureStill(editor);
+      }, engineModule);
+      await page.waitForFunction(
+        () =>
+          window.__CREATIVE_DESK_SAVE_TEST__.assets.size === 1 &&
+          window.__CREATIVE_DESK_EDITOR__.sceneState().producedArtifact ===
+            null,
+      );
+      const asset = await page.evaluate(
+        () => [...window.__CREATIVE_DESK_SAVE_TEST__.assets.values()][0],
+      );
+      await page.getByTestId("asset-" + asset.id).waitFor({ timeout: 8000 });
+      await page.getByTestId("asset-preview").waitFor({ timeout: 8000 });
+      await page.waitForFunction(() => {
+        const image = document.querySelector(
+          '[data-testid="asset-preview"] img',
+        );
+        return image?.complete && image.naturalWidth > 0;
+      });
+      assert.equal(
+        await page.evaluate(
+          async (url) =>
+            (await import(url)).getActiveEditor() === window.__captureEditor,
+          engineModule,
+        ),
+        true,
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__CREATIVE_DESK_EDITOR__
+              .sceneJson()
+              .scene.scene.filter((o) => o.object_name === "Cubo").length,
+        ),
+        1,
+      );
+    },
+  );
 } finally {
   await browser.close();
 }
 if (failures.length) throw new Error(failures.join("\n"));
 console.log(
-  "PASS: 5 actual App native-sorted save/navigation regressions, no page errors or remote requests",
+  "PASS: 6 actual App native-sorted save/navigation/capture regressions, no page errors or remote requests",
 );
 
 async function check(label, exercise) {
@@ -287,6 +340,8 @@ async function check(label, exercise) {
       );
     const state = {
       projects: new Map(),
+      assets: new Map(),
+      data: new Map(),
       writes: [],
       pending: [],
       deferSaves: false,
@@ -294,6 +349,7 @@ async function check(label, exercise) {
     };
     window.__CREATIVE_DESK_SAVE_TEST__ = state;
     window.__CREATIVE_DESK_TEST_IPC__ = {
+      fileSrc: (path) => state.data.get(path),
       invoke: async (command, args = {}) => {
         switch (command) {
           case "local_workspace_info":
@@ -307,7 +363,26 @@ async function check(label, exercise) {
               warnings: [],
             };
           case "local_list_assets":
-            return [];
+            return clone([...state.assets.values()]);
+          case "local_import_asset": {
+            const id = crypto.randomUUID();
+            const asset = {
+              id,
+              name: args.name,
+              mimeType: args.mimeType,
+              path: `/Users/test/CreativeDesk/assets/${id}/data.png`,
+            };
+            state.assets.set(id, asset);
+            state.data.set(
+              asset.path,
+              `data:${asset.mimeType};base64,${args.bytesBase64}`,
+            );
+            return clone(asset);
+          }
+          case "local_read_asset": {
+            const asset = state.assets.get(args.id);
+            return { asset: clone(asset), dataUrl: state.data.get(asset.path) };
+          }
           case "codex_status":
             return {
               connected: false,
