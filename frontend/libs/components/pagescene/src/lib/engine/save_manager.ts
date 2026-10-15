@@ -83,12 +83,13 @@ export type SaveManagerDeps = {
   // persisted render-camera position reflects the actual scene object rather
   // than the (possibly stale) store config. Null if no frustum exists.
   getRenderCameraTransform: () => {
+    uuid: string;
     position: { x: number; y: number; z: number };
     rotation: { x: number; y: number; z: number };
   } | null;
   // Recreate the ::CAM:: frustum after a load (the load path strips it). Must
   // run AFTER the store cameras are restored so it reads the loaded config.
-  recreateCameraObject: () => void;
+  recreateCameraObject: (uuid?: string) => void;
 
   // Typed event bus — every engine→store write goes through here.
   bus: EngineEventBus;
@@ -199,6 +200,7 @@ export class SaveManager {
         rotation: camera?.rotation,
       },
       cameras: camerasData,
+      renderCameraUuid: renderTransform?.uuid,
       selectedCameraId: this.deps.getSelectedCameraId(),
     };
   }
@@ -336,7 +338,7 @@ export class SaveManager {
     // The load path stripped ::CAM::; recreate it now that the store cameras
     // are restored (CamerasReplacedEvent above ran synchronously), so the
     // frustum lands at the saved render-camera transform, then re-anchor it.
-    this.deps.recreateCameraObject();
+    this.deps.recreateCameraObject(scene_json.renderCameraUuid);
     this.deps.refreshCamObj();
 
     // Restore the animation timeline. Guard legacy scenes where `timeline`

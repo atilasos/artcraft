@@ -244,6 +244,7 @@ export function parseDocument(value: unknown): ProjectDocument {
       !Array.isArray(scene.cameras)
     )
       throw new Error("Cena inválida.");
+    if (scene.renderCameraUuid !== undefined) uuid(scene.renderCameraUuid);
     scene.cameras.forEach((item) => {
       const camera = record(item);
       string(camera.id);

@@ -198,6 +198,27 @@ describe("scene document boundary", () => {
   };
   it("accepts actual engine primitives, cameras and an empty timeline", () =>
     expect(parseProject(sceneProject).kind).toBe("scene"));
+  it("accepts optional render-camera identity and rejects an invalid identity", () => {
+    const document = sceneProject.document;
+    expect(
+      parseProject({
+        ...sceneProject,
+        document: {
+          ...document,
+          scene: { ...document.scene, renderCameraUuid: project.id },
+        },
+      }).kind,
+    ).toBe("scene");
+    expect(() =>
+      parseProject({
+        ...sceneProject,
+        document: {
+          ...document,
+          scene: { ...document.scene, renderCameraUuid: "invalid" },
+        },
+      }),
+    ).toThrow();
+  });
   it("rejects a scene with malformed camera or timeline data before mounting the engine", () => {
     expect(() =>
       parseProject({

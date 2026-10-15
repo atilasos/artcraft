@@ -363,11 +363,12 @@ class Editor {
         const cam = this.cameraController.cam_obj;
         if (!cam) return null;
         return {
+          uuid: cam.uuid,
           position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
           rotation: { x: cam.rotation.x, y: cam.rotation.y, z: cam.rotation.z },
         };
       },
-      recreateCameraObject: () => this.activeScene._create_camera_obj(),
+      recreateCameraObject: (uuid) => this.activeScene._create_camera_obj(uuid),
       bus: this.bus,
     });
     this.viewport = new ViewportController({

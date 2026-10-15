@@ -477,7 +477,7 @@ class Scene {
   // cam_obj → render_camera). Placed on layer 1 so the viewport camera sees
   // it but render_camera (layer 1 disabled) excludes it from output. Has no
   // userData.media_id, so the save path skips it. Single camera for now.
-  _create_camera_obj() {
+  _create_camera_obj(uuid?: string) {
     const cameras = this.deps.getCameras();
     const renderCam = cameras.find((c) => c.id !== "main") ?? cameras[0];
     if (!renderCam) return;
@@ -488,6 +488,10 @@ class Scene {
     if (existing) this.scene.remove(existing);
 
     const group = this._buildCameraFrustum();
+    // Timeline tracks address this scene entity, independently of its camera
+    // configuration id. Restore it before the timeline resolves its targets.
+    const cameraUuid = uuid ?? existing?.uuid;
+    if (cameraUuid) group.uuid = cameraUuid;
     group.name = "::CAM::";
     group.userData["name"] = "Camera";
     group.position.set(

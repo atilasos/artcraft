@@ -13,6 +13,12 @@ const browser = await chromium.launch({
   ],
 });
 const failures = [];
+const engineModule =
+  "/@fs" +
+  new globalThis.URL(
+    "../../libs/components/pagescene/src/lib/contexts/EngineContext/EngineContext.tsx",
+    import.meta.url,
+  ).pathname;
 
 try {
   for (const [label, title] of [
@@ -170,12 +176,80 @@ try {
       assert.equal(await writeCount(page), 2);
     },
   );
+  await check(
+    "camera keyframes survive save/reopen and legacy scenes",
+    async (page) => {
+      await click(page, "new-scene");
+      await sceneReady(page);
+      const id = await projectId(page);
+      const cameraUuid = await page.evaluate(async (url) => {
+        const editor = (await import(url)).getActiveEditor();
+        const camera = editor.cameraController.cam_obj;
+        camera.position.x = 0;
+        editor.timelineController.addKeyframe(camera.uuid, 0);
+        camera.position.x = 4;
+        editor.timelineController.addKeyframe(camera.uuid, 2);
+        return camera.uuid;
+      }, engineModule);
+      await click(page, "save-project");
+      await saved(page);
+      await click(page, "new-scene");
+      await sceneReady(page);
+      await click(page, "project-" + id);
+      await sceneReady(page);
+      const reopened = await page.evaluate(async (url) => {
+        const editor = (await import(url)).getActiveEditor();
+        const camera = editor.cameraController.cam_obj;
+        editor.timelineController.seekTo(0);
+        const start = camera.position.x;
+        editor.timelineController.seekTo(2);
+        return { uuid: camera.uuid, start, end: camera.position.x };
+      }, engineModule);
+      assert.equal(reopened.uuid, cameraUuid);
+      assert.equal(reopened.start, 0);
+      assert.equal(reopened.end, 4);
+      await click(page, "save-project");
+      await saved(page);
+      const persisted = await page.evaluate(
+        (id) =>
+          window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id).document.scene,
+        id,
+      );
+      assert.equal(persisted.renderCameraUuid, cameraUuid);
+      assert.equal(persisted.timeline.tracks[0].objectUuid, cameraUuid);
+      assert.equal(persisted.timeline.tracks[0].keyframes.length, 2);
+
+      // Existing documents predate renderCameraUuid. They must still load and
+      // gain a stable camera identity on their next ordinary save.
+      await click(page, "new-scene");
+      await sceneReady(page);
+      await page.evaluate((id) => {
+        const scene =
+          window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id).document.scene;
+        delete scene.renderCameraUuid;
+        scene.timeline.tracks = [];
+      }, id);
+      await click(page, "project-" + id);
+      await sceneReady(page);
+      await click(page, "save-project");
+      await saved(page);
+      assert.match(
+        await page.evaluate(
+          (id) =>
+            window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id).document.scene
+              .renderCameraUuid,
+          id,
+        ),
+        /^[0-9a-f-]{36}$/,
+      );
+    },
+  );
 } finally {
   await browser.close();
 }
 if (failures.length) throw new Error(failures.join("\n"));
 console.log(
-  "PASS: 4 actual App native-sorted save/navigation regressions, no page errors or remote requests",
+  "PASS: 5 actual App native-sorted save/navigation regressions, no page errors or remote requests",
 );
 
 async function check(label, exercise) {
@@ -249,7 +323,7 @@ async function check(label, exercise) {
             };
             state.writes.push(project);
             // Bound the pre-fix loop so the failing regression cannot flood writes.
-            if (state.writes.length > 4)
+            if (state.writes.length > 12)
               throw new Error("Repeated identical storage writes");
             if (state.deferSaves)
               await new Promise((resolve) => state.pending.push(resolve));
@@ -294,4 +368,17 @@ async function projectId(page) {
 }
 async function writeCount(page) {
   return page.evaluate(() => window.__CREATIVE_DESK_SAVE_TEST__.writes.length);
+}
+async function sceneReady(page) {
+  await page.waitForFunction(
+    () =>
+      window.__CREATIVE_DESK_EDITOR__?.sceneState().is3DSceneLoaded === true,
+  );
+}
+async function saved(page) {
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-testid="save-state"]')?.textContent ===
+      "Guardado neste Mac",
+  );
 }
