@@ -254,6 +254,8 @@ export default function App() {
     }
   }
   async function navigate(project?: Project, kind?: Project["kind"]) {
+    // Keep the live editor and unsaved edits when selecting the open project.
+    if (project && project.id === activeRef.current?.id) return;
     if (navigationLock.current || codexLock.current || importLock.current)
       return;
     navigationLock.current = true;

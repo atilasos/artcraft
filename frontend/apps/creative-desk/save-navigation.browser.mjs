@@ -13,6 +13,7 @@ const browser = await chromium.launch({
   ],
 });
 const failures = [];
+let checks = 0;
 const engineModule =
   "/@fs" +
   new globalThis.URL(
@@ -297,15 +298,116 @@ try {
       );
     },
   );
+  await check(
+    "reselecting the active scene preserves its live editor",
+    async (page) => {
+      await click(page, "new-scene");
+      await sceneReady(page);
+      const id = await projectId(page);
+      await page.evaluate(() => window.__CREATIVE_DESK_EDITOR__.addCube());
+      await click(page, "save-project");
+      await saved(page);
+      await page.evaluate(() => window.__CREATIVE_DESK_EDITOR__.addCube());
+      await page.getByTestId("project-name").fill("Cena ativa em edição");
+      const writesBefore = await writeCount(page);
+      await page.evaluate(
+        async ({ id, engineModule }) => {
+          const { getActiveEditor } = await import(engineModule);
+          window.__editorBeforeReselect = getActiveEditor();
+          window.__canvasBeforeReselect =
+            document.querySelector("#video-scene");
+          // Native IPC resolves asynchronously; a frame can precede React's
+          // queued commit and is not an unmount acknowledgement.
+          window.__CREATIVE_DESK_SAVE_TEST__.transportDelay = 20;
+          const realFrame = window.requestAnimationFrame;
+          window.__fastNavigationFrame = 0;
+          window.requestAnimationFrame = (callback) => {
+            if (new Error().stack?.includes("/src/App.tsx")) {
+              window.requestAnimationFrame = realFrame;
+              window.__fastNavigationFrame++;
+              queueMicrotask(() => callback(performance.now()));
+              return 0;
+            }
+            return realFrame(callback);
+          };
+          document.querySelector(`[data-testid="project-${id}"]`).click();
+        },
+        { id, engineModule },
+      );
+      await page.waitForTimeout(250);
+      const lifecycle = await page.evaluate(async (engineModule) => {
+        const { getActiveEditor } = await import(engineModule);
+        const editor = getActiveEditor();
+        return {
+          hasEditor: Boolean(editor),
+          sameEditor: editor === window.__editorBeforeReselect,
+          sameCanvas:
+            document.querySelector("#video-scene") ===
+            window.__canvasBeforeReselect,
+          loaded: window.__CREATIVE_DESK_EDITOR__.sceneState().is3DSceneLoaded,
+          refs: ["sceneContainerEl", "editorCanvasEl", "camViewCanvasEl"].map(
+            (key) =>
+              window.__CREATIVE_DESK_EDITOR__.sceneState()[key]?.isConnected ??
+              null,
+          ),
+          outliner:
+            window.__CREATIVE_DESK_EDITOR__.sceneState().outlinerItems.length,
+          frames: window.__fastNavigationFrame,
+        };
+      }, engineModule);
+      console.log("Reselect lifecycle: " + JSON.stringify(lifecycle));
+      assert.equal(lifecycle.hasEditor, true);
+      assert.equal(lifecycle.sameEditor, true);
+      assert.equal(lifecycle.sameCanvas, true);
+      assert.equal(lifecycle.loaded, true);
+      assert.equal(lifecycle.outliner, 3);
+      assert.equal(lifecycle.frames, 0);
+      assert.deepEqual(lifecycle.refs, [true, true, true]);
+      assert.equal(await writeCount(page), writesBefore);
+      assert.equal(
+        await page.getByTestId("project-name").inputValue(),
+        "Cena ativa em edição",
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__CREATIVE_DESK_EDITOR__
+              .sceneJson()
+              .scene.scene.filter((object) => object.object_name === "Cubo")
+              .length,
+        ),
+        2,
+      );
+      await click(page, "save-project");
+      await saved(page);
+      const stored = await page.evaluate(
+        (id) => window.__CREATIVE_DESK_SAVE_TEST__.projects.get(id),
+        id,
+      );
+      assert.equal(stored.name, "Cena ativa em edição");
+      assert.equal(
+        stored.document.scene.scene.filter(
+          (object) => object.object_name === "Cubo",
+        ).length,
+        2,
+      );
+    },
+  );
 } finally {
   await browser.close();
 }
 if (failures.length) throw new Error(failures.join("\n"));
 console.log(
-  "PASS: 6 actual App native-sorted save/navigation/capture regressions, no page errors or remote requests",
+  `PASS: ${checks} actual App native-sorted save/navigation/capture regressions, no page errors or remote requests`,
 );
 
 async function check(label, exercise) {
+  if (
+    process.env.CREATIVE_DESK_CASE &&
+    !label.includes(process.env.CREATIVE_DESK_CASE)
+  )
+    return;
+  checks++;
   const page = await browser.newPage({
     viewport: { width: 1440, height: 900 },
   });
@@ -345,12 +447,20 @@ async function check(label, exercise) {
       writes: [],
       pending: [],
       deferSaves: false,
+      transportDelay: 0,
       releaseNext: () => state.pending.shift()?.(),
     };
     window.__CREATIVE_DESK_SAVE_TEST__ = state;
     window.__CREATIVE_DESK_TEST_IPC__ = {
       fileSrc: (path) => state.data.get(path),
       invoke: async (command, args = {}) => {
+        if (
+          state.transportDelay &&
+          ["local_load_project", "local_save_project"].includes(command)
+        )
+          await new Promise((resolve) =>
+            setTimeout(resolve, state.transportDelay),
+          );
         switch (command) {
           case "local_workspace_info":
             return {
@@ -429,13 +539,42 @@ async function check(label, exercise) {
     assert.deepEqual(remote, []);
     console.log("PASS: " + label);
   } catch (error) {
+    console.error(
+      "Failure state: " +
+        JSON.stringify(
+          await page.evaluate(async (engineModule) => {
+            const { getActiveEditor } = await import(engineModule);
+            const state = window.__CREATIVE_DESK_EDITOR__?.sceneState();
+            return {
+              project: document
+                .querySelector('[data-testid="workspace"]')
+                ?.getAttribute("data-project-id"),
+              status: document.querySelector('[data-testid="save-state"]')
+                ?.textContent,
+              hasEditor: Boolean(getActiveEditor()),
+              loaded: state?.is3DSceneLoaded,
+              refs: [
+                state?.sceneContainerEl,
+                state?.editorCanvasEl,
+                state?.camViewCanvasEl,
+              ].map((node) => node?.isConnected ?? null),
+              outliner: state?.outlinerItems.length,
+              text: document.body.innerText.slice(-1500),
+            };
+          }, engineModule),
+        ),
+    );
     failures.push(label + ": " + String(error));
-    console.error("FAIL: " + label + ": " + String(error));
+    console.error("FAIL: " + label + ": " + (error.stack || String(error)));
   } finally {
     await page.close();
   }
 }
 async function click(page, id) {
+  await page.waitForFunction((id) => {
+    const button = document.querySelector(`[data-testid="${id}"]`);
+    return button && !button.disabled;
+  }, id);
   await page.getByTestId(id).evaluate((element) => element.click());
 }
 async function projectId(page) {
